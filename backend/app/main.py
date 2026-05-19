@@ -1,0 +1,55 @@
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.config import get_settings
+from app.core.database import Base, engine
+from app.presentation.routers.health_router import router as health_router
+from app.presentation.routers.scraper_router import router as scraper_router
+from app.presentation.routers.auth_router import router as auth_router
+from app.presentation.routers.nlp_router import router as nlp_router
+from app.presentation.routers.preprocessing_router import router as preprocessing_router
+from app.presentation.routers.ingestion_router import router as ingestion_router
+from app.presentation.routers.annotation_router import router as annotation_router
+
+from app.presentation.routers.evaluation_router import router as evaluation_router
+
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
+
+
+app = FastAPI(
+    title=settings.app_title,
+    version=settings.app_version,
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://frontend:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(health_router)
+app.include_router(scraper_router)
+app.include_router(auth_router)
+app.include_router(nlp_router)
+app.include_router(preprocessing_router)
+app.include_router(ingestion_router)
+app.include_router(annotation_router)
+app.include_router(evaluation_router)
+
+
+@app.get("/")
+async def root():
+    return {"message": f"Welcome to {settings.app_title}", "version": settings.app_version}
