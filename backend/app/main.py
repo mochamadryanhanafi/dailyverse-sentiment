@@ -13,6 +13,7 @@ from app.presentation.routers.nlp_router import router as nlp_router
 from app.presentation.routers.preprocessing_router import router as preprocessing_router
 from app.presentation.routers.ingestion_router import router as ingestion_router
 from app.presentation.routers.annotation_router import router as annotation_router
+from app.infrastructure.repositories.ml_model_model import MlModelModel
 
 from app.presentation.routers.evaluation_router import router as evaluation_router
 from app.presentation.routers.training_router import router as training_router

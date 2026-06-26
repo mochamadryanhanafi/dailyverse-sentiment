@@ -153,6 +153,7 @@
   let evalOnlyValidated = true;
   let mlModels = [];
   let showUploadModelModal = false;
+  let evalUploadType = 'pipeline'; // 'pipeline' atau 'separate'
 
   function buildChartYears(stats) {
     const allYears = new Set(stats.map(s => Number(s.year)).filter(Number.isFinite));
@@ -2848,38 +2849,51 @@
                       <input type="text" class="input-field w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white" bind:value={evalModelDesc} placeholder="Misal: Model terlatih..." />
                     </label>
                     <div class="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">
-                      <p class="text-xs font-medium text-slate-500 mb-4">Pilih Tipe Upload:</p>
+                      <p class="text-xs font-medium text-slate-500 mb-4">Pilih Format File Model yang Ingin Diupload:</p>
                       
-                      <label class="space-y-2 block mb-4">
-                        <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 1: Pipeline (.pkl)</span>
-                        <input
-                          type="file" accept=".pkl"
-                          class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                          on:change={(e) => (evalPipelineFile = e.target.files[0])}
-                          disabled={evalModelUploading}
-                        />
-                      </label>
-
-                      <div class="grid gap-4 sm:grid-cols-2">
-                        <label class="space-y-2">
-                          <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 2: TF-IDF (.pkl)</span>
-                          <input
-                            type="file" accept=".pkl"
-                            class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                            on:change={(e) => (evalTfidfFile = e.target.files[0])}
-                            disabled={evalModelUploading}
-                          />
+                      <div class="flex gap-4 mb-4">
+                        <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+                          <input type="radio" bind:group={evalUploadType} value="pipeline" class="text-brand-600 focus:ring-brand-500" />
+                          1 File (Pipeline)
                         </label>
-                        <label class="space-y-2">
-                          <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 2: LogReg (.pkl)</span>
-                          <input
-                            type="file" accept=".pkl"
-                            class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                            on:change={(e) => (evalLogregFile = e.target.files[0])}
-                            disabled={evalModelUploading}
-                          />
+                        <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+                          <input type="radio" bind:group={evalUploadType} value="separate" class="text-brand-600 focus:ring-brand-500" />
+                          2 File Terpisah (TF-IDF + LogReg)
                         </label>
                       </div>
+
+                      {#if evalUploadType === 'pipeline'}
+                        <label class="space-y-2 block mb-4 animate-fade-in">
+                          <span class="text-xs font-bold uppercase tracking-widest text-slate-400">File Pipeline (.pkl)</span>
+                          <input
+                            type="file" accept=".pkl"
+                            class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                            on:change={(e) => {evalPipelineFile = e.target.files[0]; evalTfidfFile = null; evalLogregFile = null;}}
+                            disabled={evalModelUploading}
+                          />
+                        </label>
+                      {:else}
+                        <div class="grid gap-4 sm:grid-cols-2 animate-fade-in">
+                          <label class="space-y-2">
+                            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">File TF-IDF (.pkl)</span>
+                            <input
+                              type="file" accept=".pkl"
+                              class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                              on:change={(e) => {evalTfidfFile = e.target.files[0]; evalPipelineFile = null;}}
+                              disabled={evalModelUploading}
+                            />
+                          </label>
+                          <label class="space-y-2">
+                            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">File LogReg (.pkl)</span>
+                            <input
+                              type="file" accept=".pkl"
+                              class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                              on:change={(e) => {evalLogregFile = e.target.files[0]; evalPipelineFile = null;}}
+                              disabled={evalModelUploading}
+                            />
+                          </label>
+                        </div>
+                      {/if}
                     </div>
                     
                     {#if evalModelMessage}
