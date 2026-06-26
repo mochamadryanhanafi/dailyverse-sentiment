@@ -596,6 +596,7 @@ def _sse(event: str, data: dict) -> str:
 
 @router.get("/run")
 async def run_evaluation(
+    limit: int = Query(0, description="Maksimum kalimat yang dievaluasi (0 = semua)"),
     only_validated: bool = Query(True, description="Hanya gunakan data validasi ahli"),
     include_mismatches: bool = Query(True, description="Sertakan mismatches"),
     db: AsyncSession = Depends(get_db),
