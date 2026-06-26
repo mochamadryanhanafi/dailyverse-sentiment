@@ -175,7 +175,6 @@
     { id: "dashboard", label: "Dashboard" },
     { id: "ingestion", label: "Ingesti Data" },
     { id: "articles", label: "Artikel" },
-    { id: "prep_articles", label: "Prep Artikel" },
     { id: "preprocessing", label: "Preprocessing" },
     { id: "tfidf", label: "Analisis TF-IDF" },
     { id: "evaluasi", label: "Evaluasi Model" },
