@@ -146,8 +146,13 @@
   let evalTfidfFile = null;
   let evalLogregFile = null;
   let evalPipelineFile = null;
+  let evalModelName = "";
+  let evalModelDesc = "";
   let evalModelUploading = false;
   let evalModelMessage = "";
+  let evalOnlyValidated = true;
+  let mlModels = [];
+  let showUploadModelModal = false;
 
   function buildChartYears(stats) {
     const allYears = new Set(stats.map(s => Number(s.year)).filter(Number.isFinite));
@@ -265,6 +270,7 @@
         checkHealth();
         loadArticles();
         loadStats();
+        fetchModels();
       } catch (e) {
         localStorage.removeItem("token");
       }
@@ -704,20 +710,51 @@
     evalError = 'Evaluasi dibatalkan.';
   }
 
+  async function fetchModels() {
+    try {
+      mlModels = await api.evaluation.models();
+    } catch (e) {
+      console.error("Gagal memuat daftar model:", e);
+    }
+  }
+
+  async function setActiveModel(id) {
+    try {
+      await api.evaluation.updateModel(id, { is_active: true });
+      await fetchModels();
+    } catch (e) {
+      alert(`Gagal set model aktif: ${e.message}`);
+    }
+  }
+
+  async function deleteModel(id) {
+    if (!confirm("Apakah Anda yakin ingin menghapus model ini?")) return;
+    try {
+      await api.evaluation.deleteModel(id);
+      await fetchModels();
+    } catch (e) {
+      alert(`Gagal hapus model: ${e.message}`);
+    }
+  }
+
   async function uploadEvaluationModel() {
+    if (!evalModelName) {
+      alert("Nama model wajib diisi.");
+      return;
+    }
     if (!evalPipelineFile && (!evalTfidfFile || !evalLogregFile)) return;
     evalModelUploading = true;
     evalModelMessage = "";
     try {
-      const res = await api.evaluation.uploadModel(evalTfidfFile, evalLogregFile, evalPipelineFile);
+      const res = await api.evaluation.uploadModel(evalModelName, evalModelDesc, evalTfidfFile, evalLogregFile, evalPipelineFile);
       evalModelMessage = res.message || "Model berhasil diupload.";
       evalTfidfFile = null;
       evalLogregFile = null;
       evalPipelineFile = null;
-      evalMetrics = null;
-      evalMismatches = [];
-      evalError = '';
-      runEvaluation();
+      evalModelName = "";
+      evalModelDesc = "";
+      showUploadModelModal = false;
+      await fetchModels();
     } catch (e) {
       evalModelMessage = `Gagal upload model: ${e.message}`;
     } finally {
@@ -2703,100 +2740,163 @@
         {:else if activeTab === "evaluasi"}
           <div class="space-y-6 animate-fade-in max-w-3xl mx-auto">
             <div class="glass-card p-6 sm:p-8 space-y-6">
-              <div>
-                <h2 class="text-2xl font-bold text-slate-900 dark:text-white">
-                  Evaluasi Model
-                </h2>
-                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
-                  Upload satu file pipeline model, atau pasangan TF-IDF dan Logistic Regression.
-                  Setelah upload berhasil, sistem langsung menghitung akurasi terhadap data validasi ahli.
-                </p>
+              <div class="flex justify-between items-center">
+                <div>
+                  <h2 class="text-2xl font-bold text-slate-900 dark:text-white">Manajemen Model ML</h2>
+                  <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
+                    Kelola model evaluasi yang telah disimpan.
+                  </p>
+                </div>
+                <button class="btn-primary" on:click={() => showUploadModelModal = true}>
+                  Upload Model Baru
+                </button>
               </div>
 
-              <div class="space-y-4">
-                <label class="space-y-2 block">
-                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
-                    Pipeline Model
-                  </span>
-                  <input
-                    type="file"
-                    accept=".pkl"
-                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                    on:change={(e) => (evalPipelineFile = e.target.files[0])}
-                    disabled={evalModelUploading || evalRunning}
-                  />
-                  <p class="text-xs text-slate-400 dark:text-slate-500">
-                    Gunakan ini jika modelmu satu file pipeline, misalnya model_logreg_sentimen.pkl.
-                  </p>
-                </label>
+              {#if mlModels.length > 0}
+                <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 mt-4">
+                  <table class="w-full text-sm text-left text-slate-500 dark:text-slate-400">
+                    <thead class="text-xs text-slate-700 uppercase bg-slate-50 dark:bg-slate-800 dark:text-slate-300">
+                      <tr>
+                        <th scope="col" class="px-6 py-3">Nama Model</th>
+                        <th scope="col" class="px-6 py-3">Deskripsi</th>
+                        <th scope="col" class="px-6 py-3">Status</th>
+                        <th scope="col" class="px-6 py-3 text-right">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each mlModels as model}
+                        <tr class="bg-white border-b dark:bg-slate-900 dark:border-slate-700">
+                          <td class="px-6 py-4 font-medium text-slate-900 whitespace-nowrap dark:text-white">
+                            {model.name}
+                          </td>
+                          <td class="px-6 py-4">
+                            {model.description || "-"}
+                          </td>
+                          <td class="px-6 py-4">
+                            {#if model.is_active}
+                              <span class="bg-green-100 text-green-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-green-900 dark:text-green-300">Aktif</span>
+                            {:else}
+                              <span class="bg-slate-100 text-slate-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-slate-700 dark:text-slate-300">Tidak Aktif</span>
+                            {/if}
+                          </td>
+                          <td class="px-6 py-4 text-right space-x-2">
+                            {#if !model.is_active}
+                              <button class="text-brand-600 dark:text-brand-400 hover:underline text-xs font-bold" on:click={() => setActiveModel(model.id)}>Set Aktif</button>
+                            {/if}
+                            <button class="text-red-600 dark:text-red-400 hover:underline text-xs font-bold ml-2" on:click={() => deleteModel(model.id)}>Hapus</button>
+                          </td>
+                        </tr>
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+              {:else}
+                <div class="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg text-center text-sm text-slate-500">
+                  Belum ada model tersimpan.
+                </div>
+              {/if}
 
-                <div class="grid gap-4 sm:grid-cols-2">
-                <label class="space-y-2">
-                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
-                    TF-IDF Vectorizer
-                  </span>
-                  <input
-                    type="file"
-                    accept=".pkl"
-                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                    on:change={(e) => (evalTfidfFile = e.target.files[0])}
-                    disabled={evalModelUploading || evalRunning}
-                  />
-                </label>
-
-                <label class="space-y-2">
-                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
-                    Logistic Regression
-                  </span>
-                  <input
-                    type="file"
-                    accept=".pkl"
-                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-                    on:change={(e) => (evalLogregFile = e.target.files[0])}
-                    disabled={evalModelUploading || evalRunning}
-                  />
-                </label>
+              <div class="pt-6 border-t border-slate-200 dark:border-slate-700">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Uji Model Aktif</h3>
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <button
+                    class="btn-primary justify-center"
+                    on:click={runEvaluation}
+                    disabled={evalRunning || mlModels.filter(m => m.is_active).length === 0}
+                  >
+                    {#if evalRunning}
+                      Menghitung Akurasi...
+                    {:else}
+                      Jalankan Evaluasi
+                    {/if}
+                  </button>
+  
+                  {#if evalRunning}
+                    <button
+                      class="btn-ghost justify-center border border-slate-200 dark:border-slate-800"
+                      on:click={stopEvaluation}
+                    >
+                      Batalkan
+                    </button>
+                  {/if}
                 </div>
               </div>
 
-              <div class="flex flex-col sm:flex-row sm:items-center gap-3">
-                <button
-                  class="btn-primary justify-center"
-                  on:click={uploadEvaluationModel}
-                  disabled={(!evalPipelineFile && (!evalTfidfFile || !evalLogregFile)) || evalModelUploading || evalRunning}
-                >
-                  {#if evalModelUploading}
-                    Uploading Model...
-                  {:else if evalRunning}
-                    Menghitung Akurasi...
-                  {:else}
-                    Upload Model dan Hitung Akurasi
-                  {/if}
-                </button>
-
-                {#if evalRunning}
-                  <button
-                    class="btn-ghost justify-center border border-slate-200 dark:border-slate-800"
-                    on:click={stopEvaluation}
-                  >
-                    Batalkan
-                  </button>
-                {/if}
-              </div>
-
-              {#if evalModelMessage}
-                <p class="text-sm font-semibold {evalModelMessage.startsWith('Gagal') ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}">
-                  {evalModelMessage}
-                </p>
-              {/if}
-
               {#if evalError && !evalRunning}
-                <div class="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-4 py-3">
+                <div class="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-4 py-3 mt-4">
                   <p class="text-sm font-bold text-red-700 dark:text-red-300">Evaluasi belum bisa ditampilkan</p>
                   <p class="mt-1 text-sm text-red-600 dark:text-red-300">{evalError}</p>
                 </div>
               {/if}
             </div>
+
+            <!-- Modal Upload Model -->
+            {#if showUploadModelModal}
+              <div class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-lg overflow-hidden animate-scale-in">
+                  <div class="p-6 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">Upload Model Baru</h3>
+                    <button class="text-slate-400 hover:text-slate-600" on:click={() => showUploadModelModal = false}>✕</button>
+                  </div>
+                  <div class="p-6 space-y-4">
+                    <label class="space-y-2 block">
+                      <span class="text-xs font-bold uppercase tracking-widest text-slate-500">Nama Model *</span>
+                      <input type="text" class="input-field w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white" bind:value={evalModelName} placeholder="Misal: Model LogReg V1" />
+                    </label>
+                    <label class="space-y-2 block">
+                      <span class="text-xs font-bold uppercase tracking-widest text-slate-500">Deskripsi</span>
+                      <input type="text" class="input-field w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white" bind:value={evalModelDesc} placeholder="Misal: Model terlatih..." />
+                    </label>
+                    <div class="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">
+                      <p class="text-xs font-medium text-slate-500 mb-4">Pilih Tipe Upload:</p>
+                      
+                      <label class="space-y-2 block mb-4">
+                        <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 1: Pipeline (.pkl)</span>
+                        <input
+                          type="file" accept=".pkl"
+                          class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                          on:change={(e) => (evalPipelineFile = e.target.files[0])}
+                          disabled={evalModelUploading}
+                        />
+                      </label>
+
+                      <div class="grid gap-4 sm:grid-cols-2">
+                        <label class="space-y-2">
+                          <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 2: TF-IDF (.pkl)</span>
+                          <input
+                            type="file" accept=".pkl"
+                            class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                            on:change={(e) => (evalTfidfFile = e.target.files[0])}
+                            disabled={evalModelUploading}
+                          />
+                        </label>
+                        <label class="space-y-2">
+                          <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Opsi 2: LogReg (.pkl)</span>
+                          <input
+                            type="file" accept=".pkl"
+                            class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                            on:change={(e) => (evalLogregFile = e.target.files[0])}
+                            disabled={evalModelUploading}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    
+                    {#if evalModelMessage}
+                      <p class="text-sm font-semibold {evalModelMessage.startsWith('Gagal') ? 'text-red-600' : 'text-emerald-600'}">
+                        {evalModelMessage}
+                      </p>
+                    {/if}
+                  </div>
+                  <div class="p-6 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end gap-3">
+                    <button class="btn-ghost px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg" on:click={() => showUploadModelModal = false} disabled={evalModelUploading}>Batal</button>
+                    <button class="btn-primary px-4 py-2" on:click={uploadEvaluationModel} disabled={evalModelUploading || (!evalModelName) || (!evalPipelineFile && (!evalTfidfFile || !evalLogregFile))}>
+                      {evalModelUploading ? 'Menyimpan...' : 'Simpan Model'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/if}
 
             <!-- Progress -->
             {#if evalRunning}

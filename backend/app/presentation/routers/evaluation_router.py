@@ -44,9 +44,8 @@ router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-TFIDF_PATH = os.path.join(BASE_DIR, "tfidf.pkl")
-LOGREG_PATH = os.path.join(BASE_DIR, "logreg.pkl")
-PIPELINE_PATH = os.path.join(BASE_DIR, "model_logreg_sentimen.pkl")
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
 
 # Urutan label disamakan dengan evaluasi Colab:
 # Negatif, Netral, Positif
@@ -65,16 +64,12 @@ def _is_pipeline_like(model) -> bool:
 # LOAD MODEL
 # ============================================================
 
-def _load_models() -> None:
+def _load_models_sync() -> None:
+    pass # Synchronous load is no longer used globally
+
+async def _load_models(db: AsyncSession) -> None:
     """
-    Mendukung dua format model:
-
-    1. Pipeline tunggal:
-       model_logreg_sentimen.pkl
-       Pipeline berisi TF-IDF + Logistic Regression.
-
-    2. Model terpisah:
-       tfidf.pkl + logreg.pkl
+    Memuat model dari database (model yang sedang aktif).
     """
     global tfidf_vectorizer, logreg_model, pipeline_model
 
@@ -83,45 +78,44 @@ def _load_models() -> None:
     pipeline_model = None
 
     try:
-        if os.path.exists(PIPELINE_PATH):
-            candidate = joblib.load(PIPELINE_PATH)
+        from app.infrastructure.repositories.ml_model_model import MlModelModel
+        result = await db.execute(select(MlModelModel).where(MlModelModel.is_active == True))
+        active_model = result.scalars().first()
+        
+        if not active_model:
+            logger.error("[EVAL] Tidak ada model aktif di database.")
+            return
+
+        if active_model.model_type == "pipeline" and active_model.pipeline_path and os.path.exists(active_model.pipeline_path):
+            candidate = joblib.load(active_model.pipeline_path)
 
             if hasattr(candidate, "predict"):
                 pipeline_model = candidate
-                logger.info("[EVAL] Pipeline model berhasil dimuat: model_logreg_sentimen.pkl")
+                logger.info(f"[EVAL] Pipeline model berhasil dimuat: {active_model.name}")
                 return
 
-        if os.path.exists(TFIDF_PATH) and os.path.exists(LOGREG_PATH):
-            candidate_tfidf = joblib.load(TFIDF_PATH)
-            candidate_logreg = joblib.load(LOGREG_PATH)
+        if active_model.model_type == "separate" and active_model.tfidf_path and active_model.logreg_path:
+            if os.path.exists(active_model.tfidf_path) and os.path.exists(active_model.logreg_path):
+                candidate_tfidf = joblib.load(active_model.tfidf_path)
+                candidate_logreg = joblib.load(active_model.logreg_path)
 
-            if not hasattr(candidate_tfidf, "transform"):
-                raise ValueError("tfidf.pkl tidak memiliki method transform().")
+                if _is_pipeline_like(candidate_logreg):
+                    pipeline_model = candidate_logreg
+                    logger.info(f"[EVAL] logreg.pkl terdeteksi sebagai Pipeline: {active_model.name}")
+                    return
 
-            if not hasattr(candidate_logreg, "predict"):
-                raise ValueError("logreg.pkl tidak memiliki method predict().")
-
-            if _is_pipeline_like(candidate_logreg):
-                pipeline_model = candidate_logreg
-                logger.info("[EVAL] logreg.pkl terdeteksi sebagai Pipeline. Evaluasi memakai input teks mentah.")
+                tfidf_vectorizer = candidate_tfidf
+                logreg_model = candidate_logreg
+                logger.info(f"[EVAL] TF-IDF dan LogReg berhasil dimuat: {active_model.name}")
                 return
 
-            tfidf_vectorizer = candidate_tfidf
-            logreg_model = candidate_logreg
-
-            logger.info("[EVAL] TF-IDF dan LogReg berhasil dimuat.")
-            return
-
-        logger.error("[EVAL] File model tidak ditemukan.")
+        logger.error("[EVAL] File model aktif tidak ditemukan di disk.")
 
     except Exception as exc:
         logger.error(f"[EVAL] Gagal memuat model: {exc}")
         tfidf_vectorizer = None
         logreg_model = None
         pipeline_model = None
-
-
-_load_models()
 
 
 def _model_ready() -> bool:
@@ -140,58 +134,58 @@ def _model_ready() -> bool:
 
 @router.post("/upload-model")
 async def upload_model(
+    name: str = Query(..., description="Nama model"),
+    description: str = Query(None, description="Deskripsi model"),
     tfidf_file: UploadFile = File(None),
     logreg_file: UploadFile = File(None),
     pipeline_file: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Upload model evaluasi.
+    from app.infrastructure.repositories.ml_model_model import MlModelModel
+    from sqlalchemy import update
+    import uuid
+    
+    model_id = str(uuid.uuid4())
+    
+    count_res = await db.execute(select(func.count(MlModelModel.id)))
+    count = count_res.scalar_one()
+    is_active = (count == 0)
+    
+    if is_active:
+        await db.execute(update(MlModelModel).values(is_active=False))
 
-    Opsi 1:
-    - Upload pipeline_file = model_logreg_sentimen.pkl
-
-    Opsi 2:
-    - Upload tfidf_file = tfidf.pkl
-    - Upload logreg_file = logreg.pkl
-    """
-
-    # --------------------------------------------------------
-    # Opsi pipeline tunggal
-    # --------------------------------------------------------
     if pipeline_file is not None:
         if not pipeline_file.filename.lower().endswith(".pkl"):
             raise HTTPException(status_code=400, detail="File pipeline harus berformat .pkl")
 
         pipeline_bytes = await pipeline_file.read()
-        tmp_pipeline_path = f"{PIPELINE_PATH}.upload"
+        pipeline_path = os.path.join(MODELS_DIR, f"{model_id}_pipeline.pkl")
 
         try:
-            with open(tmp_pipeline_path, "wb") as f:
+            with open(pipeline_path, "wb") as f:
                 f.write(pipeline_bytes)
 
-            candidate_pipeline = joblib.load(tmp_pipeline_path)
+            new_model = MlModelModel(
+                id=model_id,
+                name=name,
+                description=description,
+                model_type="pipeline",
+                pipeline_path=pipeline_path,
+                is_active=is_active
+            )
+            db.add(new_model)
+            await db.commit()
 
-            if not hasattr(candidate_pipeline, "predict"):
-                raise ValueError("Pipeline tidak memiliki method predict().")
-
-            os.replace(tmp_pipeline_path, PIPELINE_PATH)
-            _load_models()
+            if is_active:
+                await _load_models(db)
 
         except Exception as exc:
-            if os.path.exists(tmp_pipeline_path):
-                os.remove(tmp_pipeline_path)
+            if os.path.exists(pipeline_path):
+                os.remove(pipeline_path)
+            raise HTTPException(status_code=400, detail=f"Pipeline model gagal disimpan: {exc}") from exc
 
-            raise HTTPException(status_code=400, detail=f"Pipeline model tidak valid: {exc}") from exc
+        return {"message": "Pipeline model berhasil diupload.", "model_id": model_id}
 
-        return {
-            "message": "Pipeline model berhasil diupload dan dimuat ulang.",
-            "pipeline_file": pipeline_file.filename,
-            "model_type": "pipeline",
-        }
-
-    # --------------------------------------------------------
-    # Opsi model terpisah
-    # --------------------------------------------------------
     if tfidf_file is None or logreg_file is None:
         raise HTTPException(
             status_code=400,
@@ -204,45 +198,122 @@ async def upload_model(
     tfidf_bytes = await tfidf_file.read()
     logreg_bytes = await logreg_file.read()
 
-    tmp_tfidf_path = f"{TFIDF_PATH}.upload"
-    tmp_logreg_path = f"{LOGREG_PATH}.upload"
+    tfidf_path = os.path.join(MODELS_DIR, f"{model_id}_tfidf.pkl")
+    logreg_path = os.path.join(MODELS_DIR, f"{model_id}_logreg.pkl")
 
     try:
-        with open(tmp_tfidf_path, "wb") as f:
+        with open(tfidf_path, "wb") as f:
             f.write(tfidf_bytes)
-
-        with open(tmp_logreg_path, "wb") as f:
+        with open(logreg_path, "wb") as f:
             f.write(logreg_bytes)
 
-        candidate_tfidf = joblib.load(tmp_tfidf_path)
-        candidate_logreg = joblib.load(tmp_logreg_path)
+        new_model = MlModelModel(
+            id=model_id,
+            name=name,
+            description=description,
+            model_type="separate",
+            tfidf_path=tfidf_path,
+            logreg_path=logreg_path,
+            is_active=is_active
+        )
+        db.add(new_model)
+        await db.commit()
 
-        if not hasattr(candidate_tfidf, "transform"):
-            raise ValueError("TF-IDF file tidak memiliki method transform().")
-
-        if not hasattr(candidate_logreg, "predict"):
-            raise ValueError("LogReg file tidak memiliki method predict().")
-
-        os.replace(tmp_tfidf_path, TFIDF_PATH)
-        os.replace(tmp_logreg_path, LOGREG_PATH)
-        if os.path.exists(PIPELINE_PATH):
-            os.remove(PIPELINE_PATH)
-
-        _load_models()
+        if is_active:
+            await _load_models(db)
 
     except Exception as exc:
-        for path in [tmp_tfidf_path, tmp_logreg_path]:
+        for path in [tfidf_path, logreg_path]:
             if os.path.exists(path):
                 os.remove(path)
+        raise HTTPException(status_code=400, detail=f"Model terpisah gagal disimpan: {exc}") from exc
 
-        raise HTTPException(status_code=400, detail=f"Model tidak valid: {exc}") from exc
+    return {"message": "TF-IDF dan Logistic Regression berhasil diupload.", "model_id": model_id}
 
-    return {
-        "message": "TF-IDF dan Logistic Regression berhasil diupload dan dimuat ulang.",
-        "tfidf_file": tfidf_file.filename,
-        "logreg_file": logreg_file.filename,
-        "model_type": "separate",
-    }
+from pydantic import BaseModel
+from datetime import datetime
+
+class MlModelResponse(BaseModel):
+    id: str
+    name: str
+    description: str | None
+    model_type: str
+    is_active: bool
+    created_at: datetime
+
+@router.get("/models", response_model=list[MlModelResponse])
+async def list_models(db: AsyncSession = Depends(get_db)):
+    from app.infrastructure.repositories.ml_model_model import MlModelModel
+    result = await db.execute(select(MlModelModel).order_by(MlModelModel.created_at.desc()))
+    models = result.scalars().all()
+    return [{
+        "id": str(m.id),
+        "name": m.name,
+        "description": m.description,
+        "model_type": m.model_type,
+        "is_active": m.is_active,
+        "created_at": m.created_at
+    } for m in models]
+
+class MlModelUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+
+@router.put("/models/{model_id}")
+async def update_model(model_id: str, req: MlModelUpdateRequest, db: AsyncSession = Depends(get_db)):
+    from app.infrastructure.repositories.ml_model_model import MlModelModel
+    from sqlalchemy import update
+    
+    result = await db.execute(select(MlModelModel).where(MlModelModel.id == model_id))
+    model = result.scalars().first()
+    
+    if not model:
+        raise HTTPException(status_code=404, detail="Model tidak ditemukan")
+        
+    if req.name is not None:
+        model.name = req.name
+    if req.description is not None:
+        model.description = req.description
+        
+    if req.is_active is True and not model.is_active:
+        await db.execute(update(MlModelModel).values(is_active=False))
+        model.is_active = True
+        await db.commit()
+        await _load_models(db)
+    else:
+        await db.commit()
+        
+    return {"message": "Model berhasil diupdate"}
+
+@router.delete("/models/{model_id}")
+async def delete_model(model_id: str, db: AsyncSession = Depends(get_db)):
+    from app.infrastructure.repositories.ml_model_model import MlModelModel
+    result = await db.execute(select(MlModelModel).where(MlModelModel.id == model_id))
+    model = result.scalars().first()
+    
+    if not model:
+        raise HTTPException(status_code=404, detail="Model tidak ditemukan")
+        
+    was_active = model.is_active
+    
+    if model.pipeline_path and os.path.exists(model.pipeline_path):
+        os.remove(model.pipeline_path)
+    if model.tfidf_path and os.path.exists(model.tfidf_path):
+        os.remove(model.tfidf_path)
+    if model.logreg_path and os.path.exists(model.logreg_path):
+        os.remove(model.logreg_path)
+        
+    await db.delete(model)
+    await db.commit()
+    
+    if was_active:
+        global tfidf_vectorizer, logreg_model, pipeline_model
+        tfidf_vectorizer = None
+        logreg_model = None
+        pipeline_model = None
+        
+    return {"message": "Model berhasil dihapus"}
 
 
 # ============================================================
@@ -523,33 +594,21 @@ def _sse(event: str, data: dict) -> str:
 # ENDPOINT EVALUASI STREAM
 # ============================================================
 
-@router.get("/run/stream")
-async def evaluate_stream(
-    limit: int = Query(default=0, ge=0, description="Max kalimat dievaluasi; 0 = semua"),
-    include_mismatches: bool = Query(default=True),
-    only_validated: bool = Query(
-        default=True,
-        description="Gunakan hanya data ground truth yang sudah divalidasi ahli"
-    ),
+@router.get("/run")
+async def run_evaluation(
+    only_validated: bool = Query(True, description="Hanya gunakan data validasi ahli"),
+    include_mismatches: bool = Query(True, description="Sertakan mismatches"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Evaluasi model otomatis vs ground truth.
-
-    Event SSE:
-    - progress
-    - done
-    - error
+    Menjalankan proses evaluasi sebagai Server-Sent Events (SSE).
     """
 
     async def generate() -> AsyncGenerator[str, None]:
+        await _load_models(db)
+        
         if not _model_ready():
-            yield _sse("error", {
-                "detail": (
-                    "Model belum dimuat. Pastikan tersedia model_logreg_sentimen.pkl "
-                    "atau pasangan tfidf.pkl dan logreg.pkl."
-                )
-            })
+            yield _sse("error", {"detail": "Model belum siap atau gagal dimuat."})
             return
 
         stmt = (

@@ -140,7 +140,14 @@ export const api = {
   },
 
   evaluation: {
-    uploadModel: (tfidfFile, logregFile, pipelineFile = null) => {
+    models: () => request('/evaluation/models'),
+    updateModel: (id, payload) => request(`/evaluation/models/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }),
+    deleteModel: (id) => request(`/evaluation/models/${id}`, { method: 'DELETE' }),
+    uploadModel: (name, description, tfidfFile, logregFile, pipelineFile = null) => {
       const formData = new FormData()
       if (pipelineFile) {
         formData.append('pipeline_file', pipelineFile)
@@ -148,7 +155,9 @@ export const api = {
         formData.append('tfidf_file', tfidfFile)
         formData.append('logreg_file', logregFile)
       }
-      return request('/evaluation/upload-model', {
+      const params = new URLSearchParams({ name })
+      if (description) params.append('description', description)
+      return request(`/evaluation/upload-model?${params.toString()}`, {
         method: 'POST',
         body: formData,
       })
@@ -159,7 +168,7 @@ export const api = {
         include_mismatches: includeMismatches,
         only_validated: onlyValidated,
       })
-      return new EventSource(`${BASE}/evaluation/run/stream?${params.toString()}`)
+      return new EventSource(`${BASE}/evaluation/run?${params.toString()}`)
     },
   },
 
