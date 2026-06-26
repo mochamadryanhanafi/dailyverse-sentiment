@@ -7,6 +7,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import func
 
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -87,13 +88,18 @@ async def google_auth(request: GoogleAuthRequest, db: AsyncSession = Depends(get
         user = result.scalars().first()
         
         if not user:
+            # Check if this is the first user
+            count_result = await db.execute(select(func.count(UserModel.id)))
+            user_count = count_result.scalar_one()
+            assigned_role = "superadmin" if user_count == 0 else "viewer"
+            
             # Register new user
             user = UserModel(
                 email=email,
                 username=name,
                 google_id=google_id,
                 picture=picture,
-                role=settings.default_user_role,
+                role=assigned_role,
             )
             db.add(user)
             await db.commit()

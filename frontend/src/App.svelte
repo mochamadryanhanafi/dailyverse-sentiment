@@ -983,7 +983,7 @@
 
           {#if userProfile}
             <div
-              class="hidden sm:flex items-center gap-2 sm:gap-3 bg-white/30 dark:bg-slate-800/50 px-2 sm:px-3 py-1.5 rounded-full border border-white/40 dark:border-slate-700/50 shadow-sm shrink-0"
+              class="flex items-center gap-2 sm:gap-3 bg-white/30 dark:bg-slate-800/50 px-2 sm:px-3 py-1.5 rounded-full border border-white/40 dark:border-slate-700/50 shadow-sm shrink-0"
             >
               {#if userProfile.picture}
                 <img
@@ -1033,7 +1033,15 @@
         </div>
       </header>
 
-      <main class="flex-1 p-4 pt-24 sm:p-8 sm:pt-28 scrollbar-thin">
+      <main class="flex-1 p-4 pt-24 sm:p-8 sm:pt-28 scrollbar-thin {userProfile?.role === 'viewer' ? 'viewer-mode' : ''}">
+        {#if userProfile?.role === 'viewer'}
+          <div class="mb-6 bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 text-xs px-4 py-3 rounded-lg text-center font-semibold flex items-center justify-center gap-2 max-w-7xl mx-auto shadow-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+            </svg>
+            Mode Viewer: Anda hanya dapat melihat data dan tidak dapat melakukan perubahan atau menambah data.
+          </div>
+        {/if}
         {#if activeTab === "dashboard"}
           <div class="space-y-6 animate-fade-in max-w-7xl mx-auto">
             <section class="glass-card p-5 sm:p-7">
@@ -3163,3 +3171,14 @@
     </div>
   </div>
 {/if}
+
+<style>
+  :global(.viewer-mode .btn-primary),
+  :global(.viewer-mode .btn-secondary),
+  :global(.viewer-mode input[type="file"]),
+  :global(.viewer-mode select) {
+    opacity: 0.5;
+    pointer-events: none;
+    cursor: not-allowed;
+  }
+</style>
