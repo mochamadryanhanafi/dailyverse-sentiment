@@ -13,10 +13,11 @@
   let loginError = "";
   let isLoggingIn = false;
   let userProfile = null;
+  let googleButtonReady = false;
+  let googleScriptError = false;
 
   // Set Google Client ID
-  const GOOGLE_CLIENT_ID =
-    "228773643545-ojdnob5n8i76kvihghm60eh261ahhf9l.apps.googleusercontent.com";
+  const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
   // App State
   let serverStatus = "loading";
@@ -33,6 +34,19 @@
   let yearSentimentStats = [];
   let sourceStats = [];
   let sentimentStats = [];
+  let sentenceStats = { total: 0, validated: 0 };
+
+  $: annotatedArticlesCount = totalArticles - (sentimentStats.find(s => s.sentiment === 'Belum Dianotasi' || s.sentiment === 'None')?.count || 0);
+  $: annotationCoverage = totalArticles > 0 ? Math.round((annotatedArticlesCount / totalArticles) * 100) : 0;
+  $: sentenceValidationRate = sentenceStats.total > 0 ? Math.round((sentenceStats.validated / sentenceStats.total) * 100) : 0;
+  $: topSource = sourceStats && sourceStats.length > 0
+    ? sourceStats.reduce((top, item) => item.count > top.count ? item : top, sourceStats[0])
+    : null;
+  $: dominantSentiment = sentimentStats && sentimentStats.length > 0
+    ? sentimentStats
+        .filter(s => s.sentiment && s.sentiment !== 'None' && s.sentiment !== 'Belum Dianotasi')
+        .reduce((top, item) => !top || item.count > top.count ? item : top, null)
+    : null;
 
   $: sourceSeries = Array.from(new Set(yearSourceStats.map(s => s.source))).map((source, i) => {
      const colors = ['#3b82f6', '#f97316', '#eab308', '#10b981', '#ef4444', '#8b5cf6', '#ec4899'];
@@ -61,10 +75,6 @@
   // NLP Export State
   let nlpThreshold = 0.8;
 
-  let analyzeText = "";
-  let analyzeResult = null;
-  let analyzeLoading = false;
-
   // Preprocessing State
   let prepStats = null;
   let prepRunning = false;
@@ -81,6 +91,10 @@
   let prepPreviewFilter = "done";
   let prepStageFilter = "final";
   let prepResetting = false;
+  let articlePrepRunning = false;
+  let articlePrepForce = false;
+  let articlePrepBatchSize = 100;
+  let articlePrepMessage = "";
 
   let extractRunning = false;
   let extractProgress = 0;
@@ -96,7 +110,9 @@
 
   // Upload Annotated PDF State
   let annotatedPdfFile = null;
+  let annotatedCsvFile = null;
   let annotatedPdfUploading = false;
+  let annotatedCsvUploading = false;
   let annotatedPdfMessage = "";
   let annotatedPdfResult = null;
   let uploadLogs = [];
@@ -108,6 +124,8 @@
   let uploadInserted = 0;
   let uploadSkipped = 0;
   let uploadCurrentId = '';
+  // Statistik Validasi PDF
+  let pdfValidationStats = null; // { total, validated, not_validated, by_sentiment, validated_by_sentiment }
 
   // TF-IDF State
   let tfidfData = null;
@@ -123,22 +141,38 @@
   let evalProgress = 0;
   let evalTotal = 0;
   let evalCurrentText = '';
+  let evalError = '';
   let evalEventSource = null;
-  let evalLimitAll = true;
-  let evalLimit = 500;
-  let evalMismatchTab = 'table';
-  let evalIncludeMismatches = true;
+  let evalTfidfFile = null;
+  let evalLogregFile = null;
+  let evalPipelineFile = null;
+  let evalModelUploading = false;
+  let evalModelMessage = "";
 
-  const YEARS = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024];
+  function buildChartYears(stats) {
+    const allYears = new Set(stats.map(s => Number(s.year)).filter(Number.isFinite));
+    if (allYears.size === 0) return [];
+    const sorted = Array.from(allYears).sort((a, b) => a - b);
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    const range = [];
+    for (let y = min; y <= max; y++) {
+      range.push(y);
+    }
+    return range;
+  }
+
+  $: sourceChartYears = buildChartYears(yearSourceStats);
+  $: sentimentChartYears = buildChartYears(yearSentimentStats);
 
   const navItems = [
-    { id: "dashboard", icon: "📊", label: "Dashboard" },
-    { id: "ingestion", icon: "📥", label: "Ingesti Data" },
-    { id: "articles", icon: "📰", label: "Artikel" },
-    { id: "preprocessing", icon: "🔬", label: "Preprocessing" },
-    { id: "tfidf", icon: "📈", label: "Analisis TF-IDF" },
-    { id: "evaluasi", icon: "🎯", label: "Evaluasi Model" },
-    { id: "realtime", icon: "⚡", label: "Analisis Realtime" },
+    { id: "dashboard", label: "Dashboard" },
+    { id: "ingestion", label: "Ingesti Data" },
+    { id: "articles", label: "Artikel" },
+    { id: "prep_articles", label: "Prep Artikel" },
+    { id: "preprocessing", label: "Preprocessing" },
+    { id: "tfidf", label: "Analisis TF-IDF" },
+    { id: "evaluasi", label: "Evaluasi Model" },
   ];
 
   function getSourceStyle(url, source) {
@@ -183,10 +217,26 @@
     activeTab = "dashboard";
   }
 
+  function handleLocalLogin() {
+    localStorage.removeItem("token");
+    userProfile = {
+      username: "Local Demo",
+      email: "local-demo@dailyverse.test",
+      role: "superadmin",
+      picture: null,
+    };
+    isLoggedIn = true;
+    loginError = "";
+    checkHealth();
+    loadArticles();
+    loadStats();
+  }
+
   // --- Ingestion ---
   let csvFile = null;
   let uploadingCsv = false;
   let uploadMessage = "";
+  let syncLoading = false;
 
   async function handleIngestionCsvUpload() {
     if (!csvFile) return;
@@ -194,7 +244,7 @@
     uploadMessage = "Mengunggah dan memvalidasi...";
     try {
       const res = await api.ingestion.uploadCsv(csvFile);
-      uploadMessage = `Berhasil! ${res.articles_inserted} artikel masuk database.`;
+      uploadMessage = `Berhasil! ${res.articles_inserted} baris CSV masuk database. Data lama sudah dihapus.`;
       csvFile = null;
     } catch (e) {
       uploadMessage = `Gagal: ${e.message}`;
@@ -226,7 +276,7 @@
     script.async = true;
     script.defer = true;
     script.onload = () => {
-      if (window.google) {
+      if (window.google && GOOGLE_CLIENT_ID) {
         window.google.accounts.id.initialize({
           client_id: GOOGLE_CLIENT_ID,
           callback: handleGoogleCallback,
@@ -238,7 +288,13 @@
           document.getElementById("google-button-div"),
           { theme: "outline", size: "large", shape: "pill", width: "100%" },
         );
+        googleButtonReady = true;
+      } else {
+        googleScriptError = true;
       }
+    };
+    script.onerror = () => {
+      googleScriptError = true;
     };
     document.head.appendChild(script);
   });
@@ -267,11 +323,17 @@
       sentimentStats = r.by_sentiment;
       yearSourceStats = r.by_year_source || [];
       yearSentimentStats = r.by_year_sentiment || [];
+      const prep = await api.preprocessing.stats();
+      sentenceStats = {
+        total: prep.total || 0,
+        validated: prep.validated || 0,
+      };
     } catch { 
       sourceStats = [];
       sentimentStats = [];
       yearSourceStats = [];
       yearSentimentStats = [];
+      sentenceStats = { total: 0, validated: 0 };
     }
   }
 
@@ -343,6 +405,24 @@
     }
   }
 
+  async function runArticlePreprocessing() {
+    if (articlePrepRunning) return;
+    articlePrepRunning = true;
+    articlePrepMessage = "";
+    try {
+      const result = await api.preprocessing.runArticles(
+        articlePrepForce,
+        articlePrepBatchSize,
+      );
+      articlePrepMessage = `Berhasil memproses ${result.processed.toLocaleString("id-ID")} artikel. Dilewati: ${result.skipped.toLocaleString("id-ID")}. Total artikel terproses: ${result.total_preprocessed.toLocaleString("id-ID")}.`;
+      await loadStats();
+    } catch (e) {
+      articlePrepMessage = `Gagal preprocessing artikel: ${e.message}`;
+    } finally {
+      articlePrepRunning = false;
+    }
+  }
+
   function runExtraction() {
     if (extractRunning) return;
     extractRunning = true;
@@ -402,6 +482,7 @@
         20,
         extractedSentencesOffset,
         'all',
+        true,
       );
     } catch {
       extractedSentencesPreview = null;
@@ -424,8 +505,23 @@
 
   function addUploadLog(msg, type = 'info') {
     const ts = new Date().toLocaleTimeString('id-ID', { hour12: false });
-    const icon = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : type === 'success' ? '✅' : 'ℹ️';
+    const icon = type === 'error' ? 'ERR' : type === 'warn' ? 'WARN' : type === 'success' ? 'OK' : 'INFO';
     uploadLogs = [...uploadLogs, { ts, icon, msg, type }];
+  }
+
+  async function handleSyncSentiment() {
+    try {
+      syncLoading = true;
+      const res = await api.preprocessing.syncSentiment();
+      console.log(res.message);
+      await loadStats();
+      await loadArticles();
+    } catch (err) {
+      console.error(err);
+      alert("Gagal sinkronisasi sentimen");
+    } finally {
+      syncLoading = false;
+    }
   }
 
   async function handleAnnotatedPdfUpload() {
@@ -434,6 +530,7 @@
     annotatedPdfUploading = true;
     annotatedPdfMessage = '';
     annotatedPdfResult = null;
+    pdfValidationStats = null;
     uploadPhase = 'uploading';
     uploadProcessed = 0;
     uploadTotal = 0;
@@ -448,18 +545,27 @@
     annotatedPdfFile = null;
 
     uploadAbortController = api.preprocessing.uploadAnnotatedPdf(fileToUpload, (ev) => {
-      if (ev.event === 'parsed') {
+      if (ev.event === 'ocr_start') {
+        uploadPhase = 'ocr';
+        addUploadLog(`PDF scan terdeteksi. Menjalankan OCR (proses lebih lama)…`, 'warn');
+
+      } else if (ev.event === 'parsed') {
         uploadPhase = 'deleting';
         uploadTotal = ev.total_parsed;
-        addUploadLog(`PDF terparsing: ${ev.total_parsed} baris ditemukan`, 'info');
-
+        const modeLabel = uploadPhase === 'ocr' ? ' [via OCR]' : '';
+        addUploadLog(`PDF terparsing${modeLabel}: ${ev.total_parsed} baris ditemukan`, 'info');
+        // Simpan statistik validasi dari PDF
+        if (ev.pdf_stats) {
+          pdfValidationStats = ev.pdf_stats;
+          addUploadLog(`Tervalidasi: ${ev.pdf_stats.validated} dari ${ev.total_parsed} baris`, 'info');
+        }
       } else if (ev.event === 'deleting') {
         uploadPhase = 'deleting';
         addUploadLog('Menghapus data ekstraksi lama…', 'info');
 
       } else if (ev.event === 'deleted') {
         uploadPhase = 'inserting';
-        addUploadLog(`🗑️ Data lama dihapus: ${ev.deleted_count} kalimat`, 'info');
+        addUploadLog(`Data lama dihapus: ${ev.deleted_count} kalimat`, 'info');
 
       } else if (ev.event === 'progress') {
         uploadPhase = 'inserting';
@@ -473,13 +579,20 @@
         uploadPhase = 'done';
         annotatedPdfResult = ev;
         annotatedPdfMessage = ev.message;
-        addUploadLog(`✅ Insert: ${ev.inserted} kalimat`, 'success');
-        if (ev.skipped > 0) addUploadLog(`⚠️ Dilewati: ${ev.skipped} (tdk ditemukan: ${ev.not_found ?? 0})`, 'warn');
+        // Update statistik validasi dari done event (lebih lengkap)
+        if (ev.pdf_stats) {
+          pdfValidationStats = ev.pdf_stats;
+        }
+        addUploadLog(`Insert: ${ev.inserted} kalimat`, 'success');
+        if (ev.skipped > 0) addUploadLog(`Dilewati: ${ev.skipped} (tdk ditemukan: ${ev.not_found ?? 0})`, 'warn');
+        if (ev.validated_count !== undefined) addUploadLog(`Tervalidasi (kolom V): ${ev.validated_count} | Belum: ${ev.not_validated_count ?? 0}`, 'success');
         addUploadLog(`Selesai! Total baris PDF: ${ev.total_parsed}`, 'success');
         annotatedPdfUploading = false;
         uploadAbortController = null;
         loadPrepStats();
         loadExtractedSentencesPreview();
+        loadStats();
+        loadArticles();
 
       } else if (ev.event === 'error') {
         uploadPhase = 'error';
@@ -498,6 +611,40 @@
     });
   }
 
+  async function handleAnnotatedCsvUpload() {
+    if (!annotatedCsvFile) return;
+    uploadLogs = [];
+    annotatedCsvUploading = true;
+    annotatedPdfMessage = '';
+    annotatedPdfResult = null;
+    pdfValidationStats = null;
+
+    addUploadLog(`Mulai upload CSV: ${annotatedCsvFile.name} (${(annotatedCsvFile.size/1024).toFixed(1)} KB)`);
+    addUploadLog('Mengirim CSV anotasi final ke server…');
+
+    const fileToUpload = annotatedCsvFile;
+    annotatedCsvFile = null;
+
+    try {
+      const res = await api.preprocessing.uploadAnnotatedCsv(fileToUpload);
+      annotatedPdfResult = res;
+      annotatedPdfMessage = res.message;
+      pdfValidationStats = res.pdf_stats;
+      addUploadLog(`Insert: ${res.inserted} kalimat`, 'success');
+      if (res.skipped > 0) addUploadLog(`Dilewati: ${res.skipped}`, 'warn');
+      addUploadLog(`Tervalidasi: ${res.validated_count} | Belum: ${res.not_validated_count}`, 'success');
+      await loadPrepStats();
+      await loadExtractedSentencesPreview();
+      await loadStats();
+      await loadArticles();
+    } catch (e) {
+      annotatedPdfMessage = `Gagal: ${e.message}`;
+      addUploadLog(`GAGAL: ${e.message}`, 'error');
+    } finally {
+      annotatedCsvUploading = false;
+    }
+  }
+
   function cancelUpload() {
     if (uploadAbortController) {
       uploadAbortController.abort();
@@ -505,17 +652,17 @@
     }
   }
 
-  function runEvaluation() {
+  function runEvaluation(onlyValidated = true, allowFallback = true) {
     if (evalRunning) return;
     evalRunning = true;
     evalMetrics = null;
     evalMismatches = [];
+    evalError = '';
     evalProgress = 0;
     evalTotal = 0;
     evalCurrentText = '';
 
-    const limit = evalLimitAll ? 0 : evalLimit;
-    evalEventSource = api.evaluation.runStream(limit, evalIncludeMismatches);
+    evalEventSource = api.evaluation.runStream(0, true, onlyValidated);
 
     evalEventSource.onmessage = (e) => {
       const data = JSON.parse(e.data);
@@ -532,13 +679,19 @@
       } else if (data.event === 'error') {
         evalMetrics = null;
         evalRunning = false;
-        evalCurrentText = `❌ ${data.detail}`;
+        evalCurrentText = `Error: ${data.detail}`;
+        evalError = data.detail || 'Evaluasi model gagal.';
         evalEventSource.close();
         evalEventSource = null;
+        if (allowFallback && onlyValidated && String(data.detail || '').toLowerCase().includes('divalidasi')) {
+          evalModelMessage = 'Model berhasil diupload. Data tervalidasi belum tersedia, evaluasi dilanjutkan memakai semua data berlabel.';
+          runEvaluation(false, false);
+        }
       }
     };
     evalEventSource.onerror = () => {
       evalRunning = false;
+      evalError = 'Koneksi evaluasi terputus. Coba jalankan ulang evaluasi.';
       evalEventSource?.close();
       evalEventSource = null;
     };
@@ -548,6 +701,28 @@
     evalEventSource?.close();
     evalEventSource = null;
     evalRunning = false;
+    evalError = 'Evaluasi dibatalkan.';
+  }
+
+  async function uploadEvaluationModel() {
+    if (!evalPipelineFile && (!evalTfidfFile || !evalLogregFile)) return;
+    evalModelUploading = true;
+    evalModelMessage = "";
+    try {
+      const res = await api.evaluation.uploadModel(evalTfidfFile, evalLogregFile, evalPipelineFile);
+      evalModelMessage = res.message || "Model berhasil diupload.";
+      evalTfidfFile = null;
+      evalLogregFile = null;
+      evalPipelineFile = null;
+      evalMetrics = null;
+      evalMismatches = [];
+      evalError = '';
+      runEvaluation();
+    } catch (e) {
+      evalModelMessage = `Gagal upload model: ${e.message}`;
+    } finally {
+      evalModelUploading = false;
+    }
   }
 
   async function runPreprocessing() {
@@ -575,18 +750,18 @@
         es.close();
         prepLogs = [
           ...prepLogs,
-          `✅ Selesai! Diproses: ${data.processed}, Dilewati: ${data.skipped}, Total terproses: ${data.total_preprocessed}`,
+          `Selesai. Diproses: ${data.processed}, Dilewati: ${data.skipped}, Total terproses: ${data.total_preprocessed}`,
         ];
         await loadPrepStats();
         await loadPrepPreview();
       } else if (data.event === "error") {
-        prepLogs = [...prepLogs, `❌ Error: ${data.detail}`];
+        prepLogs = [...prepLogs, `Error: ${data.detail}`];
         prepRunning = false;
         es.close();
       }
     };
     es.onerror = () => {
-      prepLogs = [...prepLogs, "❌ Koneksi SSE terputus."];
+      prepLogs = [...prepLogs, "Koneksi SSE terputus."];
       prepRunning = false;
       es.close();
     };
@@ -602,14 +777,14 @@
     prepResetting = true;
     try {
       const r = await api.preprocessing.reset();
-      prepLogs = [`🔄 Reset ${r.reset} artikel. Siap diproses ulang.`];
+      prepLogs = [`Reset ${r.reset} kalimat. Siap diproses ulang.`];
       prepProgress = 0;
       prepTotal = 0;
       prepDone = false;
       prepPreview = null;
       await loadPrepStats();
     } catch (e) {
-      prepLogs = [`❌ Reset gagal: ${e.message}`];
+      prepLogs = [`Reset gagal: ${e.message}`];
     } finally {
       prepResetting = false;
     }
@@ -619,7 +794,7 @@
 {#if !isLoggedIn}
   <div class="liquid-bg min-h-screen flex items-center justify-center p-4">
     <div
-      class="glass-card p-8 w-full max-w-sm text-center relative z-10 shadow-2xl"
+      class="glass-card overflow-visible p-8 w-full max-w-sm text-center relative z-10 shadow-2xl"
     >
       <div
         class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-brand-500 to-indigo-600 flex items-center justify-center shadow-lg mb-6"
@@ -641,6 +816,16 @@
         <div id="google-button-div" class="w-full flex justify-center mt-4">
           <!-- Google button will be rendered here -->
         </div>
+
+        {#if googleScriptError || !googleButtonReady}
+          <button
+            type="button"
+            class="btn-primary w-full shadow-lg shadow-brand-500/30"
+            on:click={handleLocalLogin}
+          >
+            Masuk ke Dashboard
+          </button>
+        {/if}
 
         {#if isLoggingIn}
           <div
@@ -670,13 +855,15 @@
   </div>
 {:else}
   <div
-    class="liquid-bg flex h-screen overflow-hidden transition-colors duration-300"
+    class="liquid-bg flex min-h-screen transition-colors duration-300"
   >
     {#if sidebarOpen}
-      <div
+      <button
+        type="button"
+        aria-label="Tutup sidebar"
         class="fixed inset-0 z-20 bg-black/40 lg:hidden backdrop-blur-sm"
         on:click={() => (sidebarOpen = false)}
-      ></div>
+      ></button>
     {/if}
 
     <aside
@@ -687,7 +874,7 @@
     transition-transform duration-300
     {sidebarOpen
         ? 'translate-x-0'
-        : '-translate-x-full'} lg:translate-x-0 lg:static lg:bg-transparent lg:border-r lg:border-slate-200/50 lg:dark:border-slate-700/30
+        : '-translate-x-full'} lg:translate-x-0 lg:h-screen lg:bg-transparent lg:border-r lg:border-slate-200/50 lg:dark:border-slate-700/30
   "
     >
       <div
@@ -720,24 +907,17 @@
         </p>
         {#each navItems as item}
           <button
-            class="w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-sm font-semibold transition-all duration-300 relative overflow-hidden group
+            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 relative overflow-hidden group
             {activeTab === item.id
-              ? 'bg-white/60 dark:bg-slate-800/60 shadow-[0_4px_12px_rgba(0,0,0,0.05)] text-brand-700 dark:text-brand-300 border border-white/80 dark:border-white/10'
-              : 'text-slate-600 dark:text-slate-300 hover:bg-white/30 dark:hover:bg-slate-800/30 border border-transparent'}"
+              ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-950 shadow-sm'
+              : 'text-slate-600 dark:text-slate-300 hover:bg-white/50 dark:hover:bg-slate-800/50 border border-transparent'}"
             on:click={() => navigate(item.id)}
           >
-            {#if activeTab === item.id}
-              <div
-                class="absolute inset-0 bg-gradient-to-r from-brand-500/10 to-transparent"
-              ></div>
-            {/if}
-            <span class="text-lg w-6 text-center drop-shadow-sm"
-              >{item.icon}</span
-            >
+            <span class="h-1.5 w-1.5 rounded-full {activeTab === item.id ? 'bg-white dark:bg-slate-950' : 'bg-slate-300 dark:bg-slate-600'}"></span>
             <span class="relative z-10">{item.label}</span>
             {#if item.id === "articles" && totalArticles > 0}
               <span
-                class="ml-auto relative z-10 text-[10px] font-bold bg-brand-100 dark:bg-brand-900/50 text-brand-700 dark:text-brand-300 px-2.5 py-0.5 rounded-full shadow-inner"
+                class="ml-auto relative z-10 text-[10px] font-bold {activeTab === item.id ? 'bg-white/20 text-white dark:bg-slate-950/10 dark:text-slate-950' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'} px-2.5 py-0.5 rounded-full"
               >
                 {totalArticles}
               </span>
@@ -749,90 +929,77 @@
       <div
         class="px-5 py-5 border-t border-slate-200/50 dark:border-slate-700/50 space-y-3 shrink-0 bg-white/20 dark:bg-slate-900/20 backdrop-blur-md"
       >
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold text-slate-500 dark:text-slate-400"
-            >API Server</span
-          >
-          <StatusBadge status={serverStatus} />
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold text-slate-500 dark:text-slate-400"
-            >Database</span
-          >
-          <StatusBadge status={dbStatus} />
-        </div>
-        <div class="flex items-center justify-between pt-3">
-          <button
-            class="btn-ghost text-xs px-3 py-1.5 rounded-xl gap-1.5 shadow-sm bg-white/50 dark:bg-slate-800/50 border border-white/60 dark:border-white/5"
-            on:click={checkHealth}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="w-3.5 h-3.5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fill-rule="evenodd"
-                d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
-                clip-rule="evenodd"
-              />
-            </svg>
-            Refresh
-          </button>
-          <ThemeToggle />
+        <div class="text-[10px] text-center text-slate-400 font-semibold">
+          DailyVerse &copy; 2026
         </div>
       </div>
     </aside>
 
-    <div class="flex-1 flex flex-col min-w-0 relative z-10">
-      <header
-        class="h-20 shrink-0 flex items-center gap-4 px-6 sm:px-8 border-b border-white/20 dark:border-slate-700/30"
+      <div class="flex-1 flex flex-col min-w-0 relative z-10 lg:ml-64">
+        <header
+        class="fixed top-0 left-0 right-0 lg:left-64 z-40 h-20 shrink-0 flex items-center gap-3 px-4 sm:px-6 lg:px-8 border-b border-white/20 dark:border-slate-700/30 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-sm"
       >
         <button
-          class="lg:hidden btn-ghost rounded-xl w-10 h-10 p-0 flex items-center justify-center bg-white/50 dark:bg-slate-800/50 backdrop-blur-md"
-          on:click={() => (sidebarOpen = !sidebarOpen)}
+          type="button"
+          class="lg:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 dark:border-slate-700 bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-200 shadow-sm"
+          aria-label="Buka menu"
+          on:click={() => (sidebarOpen = true)}
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            class="w-5 h-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M4 6h16M4 12h16M4 18h16"
-            />
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10zm0 5.25a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75z" clip-rule="evenodd" />
           </svg>
         </button>
         <h1
-          class="font-extrabold text-slate-900 dark:text-white text-xl capitalize drop-shadow-sm flex items-center gap-2"
+          class="min-w-0 flex-1 truncate font-extrabold text-slate-900 dark:text-white text-base sm:text-xl capitalize drop-shadow-sm"
         >
           {navItems.find((n) => n.id === activeTab)?.label}
         </h1>
-        <div class="ml-auto flex items-center gap-3">
+        
+        <div class="ml-auto flex min-w-0 items-center gap-2 sm:gap-3">
+          <!-- Status Items -->
+          <div class="hidden md:flex items-center gap-3 px-3 py-1.5 rounded-full bg-white/30 dark:bg-slate-800/50 border border-white/40 dark:border-slate-700/50 shadow-sm shrink-0">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider hidden sm:block">API</span>
+              <StatusBadge status={serverStatus} />
+            </div>
+            <div class="w-px h-4 bg-slate-300 dark:bg-slate-600"></div>
+            <div class="flex items-center gap-1.5">
+              <span class="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider hidden sm:block">DB</span>
+              <StatusBadge status={dbStatus} />
+            </div>
+            <div class="w-px h-4 bg-slate-300 dark:bg-slate-600"></div>
+            <button
+              class="text-slate-500 hover:text-brand-500 dark:hover:text-brand-400 transition-colors p-1"
+              on:click={checkHealth}
+              title="Refresh Status"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+
+          <ThemeToggle />
+
           {#if userProfile}
             <div
-              class="hidden sm:flex items-center gap-3 bg-white/30 dark:bg-slate-800/50 px-3 py-1.5 rounded-full border border-white/40 dark:border-slate-700/50 shadow-sm"
+              class="hidden sm:flex items-center gap-2 sm:gap-3 bg-white/30 dark:bg-slate-800/50 px-2 sm:px-3 py-1.5 rounded-full border border-white/40 dark:border-slate-700/50 shadow-sm shrink-0"
             >
               {#if userProfile.picture}
                 <img
                   src={userProfile.picture}
                   alt="Profile"
-                  class="w-8 h-8 rounded-full shadow-sm"
+                  class="w-7 h-7 sm:w-8 sm:h-8 rounded-full shadow-sm"
                   referrerpolicy="no-referrer"
                 />
               {:else}
                 <div
-                  class="w-8 h-8 rounded-full bg-brand-500 text-white flex items-center justify-center font-bold text-sm"
+                  class="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-brand-500 text-white flex items-center justify-center font-bold text-sm"
                 >
                   {userProfile.username.charAt(0)}
                 </div>
               {/if}
-              <div class="flex flex-col">
+              <div class="hidden sm:flex flex-col">
                 <span
                   class="text-xs font-bold text-slate-800 dark:text-slate-100 leading-none"
                   >{userProfile.username}</span
@@ -842,7 +1009,7 @@
                   >{userProfile.role}</span
                 >
               </div>
-              <div class="w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1"></div>
+              <div class="hidden sm:block w-px h-6 bg-slate-300 dark:bg-slate-600 mx-1"></div>
               <button
                 class="text-slate-500 hover:text-red-500 transition-colors p-1"
                 on:click={handleLogout}
@@ -866,120 +1033,140 @@
         </div>
       </header>
 
-      <main class="flex-1 overflow-y-auto p-4 sm:p-8 scrollbar-thin">
+      <main class="flex-1 p-4 pt-24 sm:p-8 sm:pt-28 scrollbar-thin">
         {#if activeTab === "dashboard"}
-          <div class="space-y-8 animate-fade-in max-w-6xl mx-auto">
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-5">
+          <div class="space-y-6 animate-fade-in max-w-7xl mx-auto">
+            <section class="glass-card p-5 sm:p-7">
+              <div class="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
+                <div class="max-w-3xl">
+                  <p class="text-xs font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">
+                    Economic Sentiment Analytics
+                  </p>
+                  <h2 class="mt-2 text-2xl sm:text-3xl font-black text-slate-950 dark:text-white leading-tight">
+                    Ringkasan Analisis Sentimen Berita Ekonomi
+                  </h2>
+                  <p class="mt-3 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                    Pantau cakupan data artikel, proses anotasi, ekstraksi kalimat, dan performa model dalam satu layar.
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-3 min-w-0 lg:min-w-[22rem]">
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Coverage</p>
+                    <p class="mt-1 text-2xl font-black text-emerald-600 dark:text-emerald-400">{annotationCoverage}%</p>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">artikel dianotasi</p>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Validasi</p>
+                    <p class="mt-1 text-2xl font-black text-blue-600 dark:text-blue-400">{sentenceValidationRate}%</p>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">kalimat ground truth</p>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Sumber Utama</p>
+                    <p class="mt-1 text-lg font-black text-slate-900 dark:text-white truncate">{topSource ? getSourceStyle('', topSource.source).name : '-'}</p>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">{topSource ? topSource.count.toLocaleString('id-ID') : 0} artikel</p>
+                  </div>
+                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Sentimen Dominan</p>
+                    <p class="mt-1 text-lg font-black text-slate-900 dark:text-white truncate">{dominantSentiment ? dominantSentiment.sentiment : '-'}</p>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">{dominantSentiment ? dominantSentiment.count.toLocaleString('id-ID') : 0} artikel</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
               <StatCard
                 label="Total Artikel"
                 value={totalArticles}
-                icon="📰"
                 gradient="from-brand-500 to-indigo-600"
                 sublabel="tersimpan di database"
               />
               <StatCard
-                label="Server API"
-                value={serverStatus === "ok" ? 1 : 0}
-                icon="⚡"
+                label="Artikel Dianotasi"
+                value={annotatedArticlesCount}
                 gradient="from-emerald-500 to-teal-500"
-                sublabel={serverStatus === "ok" ? "Online" : "Offline"}
+                sublabel="memiliki label sentimen"
               />
               <StatCard
-                label="Database"
-                value={dbStatus === "ok" ? 1 : 0}
-                icon="🗄️"
+                label="Total Kalimat"
+                value={sentenceStats.total}
+                gradient="from-blue-500 to-cyan-500"
+                sublabel="tersimpan untuk analisis"
+              />
+              <StatCard
+                label="Kalimat Tervalidasi"
+                value={sentenceStats.validated}
                 gradient="from-violet-500 to-fuchsia-600"
-                sublabel={dbStatus === "ok" ? "Terhubung" : "Terputus"}
+                sublabel="ground truth ahli"
               />
             </div>
 
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              <div class="flex flex-col gap-3">
-                <LineChart
-                  series={sourceSeries}
-                  emptyYears={YEARS}
-                  title="Trend Artikel (Sumber)"
-                  height={280}
-                  labelKey="year"
-                  valueKey="count"
-                />
-              </div>
-
-              <div class="flex flex-col gap-3">
-                <LineChart
-                  series={sentimentSeries}
-                  emptyYears={YEARS}
-                  title="Trend Artikel (Sentimen)"
-                  height={280}
-                  labelKey="year"
-                  valueKey="count"
-                />
-              </div>
+            <div class="grid grid-cols-1 gap-5">
+              <LineChart
+                series={sentimentSeries}
+                emptyYears={sentimentChartYears}
+                title="Tren Artikel Berdasarkan Sentimen"
+                height={320}
+                labelKey="year"
+                valueKey="count"
+              />
+              <LineChart
+                series={sourceSeries}
+                emptyYears={sourceChartYears}
+                title="Tren Artikel Berdasarkan Portal"
+                height={320}
+                labelKey="year"
+                valueKey="count"
+              />
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <!-- Sentiment Distribution -->
-              <div class="glass-card p-6 flex flex-col gap-4">
-                <h3
-                  class="font-bold text-slate-800 dark:text-white flex items-center gap-2"
-                >
-                  <span>🎭</span> Distribusi Sentimen
-                </h3>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
+                <div>
+                  <h3 class="font-bold text-slate-900 dark:text-white">Distribusi Sentimen</h3>
+                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Proporsi label artikel dalam dataset.</p>
+                </div>
                 {#if sentimentStats && sentimentStats.length > 0}
-                  <div class="space-y-4 mt-2">
+                  <div class="space-y-4">
                     {#each sentimentStats as stat}
+                      {@const sentimentName = stat.sentiment === "None" || !stat.sentiment ? "Belum Dianotasi" : stat.sentiment}
+                      {@const sentimentPct = totalArticles > 0 ? Math.max((stat.count / totalArticles) * 100, 1) : 0}
                       <div>
                         <div class="flex justify-between items-end mb-1">
-                          <span
-                            class="text-sm font-semibold capitalize text-slate-700 dark:text-slate-300"
-                          >
-                            {stat.sentiment === "None" || !stat.sentiment
-                              ? "Belum Dianotasi"
-                              : stat.sentiment}
-                          </span>
-                          <span class="text-xs font-bold text-slate-500"
-                            >{stat.count.toLocaleString("id-ID")}</span
-                          >
+                          <span class="text-sm font-semibold capitalize text-slate-700 dark:text-slate-300">{sentimentName}</span>
+                          <span class="text-xs font-bold text-slate-500">{stat.count.toLocaleString("id-ID")}</span>
                         </div>
-                        <div
-                          class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden flex"
-                        >
+                        <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden">
                           <div
-                            class="h-2.5 rounded-full {stat.sentiment?.toLowerCase() ===
-                            'positif'
+                            class="h-2.5 rounded-full {stat.sentiment?.toLowerCase() === 'positif'
                               ? 'bg-emerald-500'
                               : stat.sentiment?.toLowerCase() === 'negatif'
                                 ? 'bg-red-500'
                                 : stat.sentiment?.toLowerCase() === 'netral'
                                   ? 'bg-blue-500'
                                   : 'bg-slate-400'}"
-                            style="width: {Math.max(
-                              (stat.count / totalArticles) * 100,
-                              1,
-                            )}%"
+                            style="width: {sentimentPct}%"
                           ></div>
                         </div>
                       </div>
                     {/each}
                   </div>
                 {:else}
-                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">
-                    Belum ada data sentimen.
-                  </p>
+                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">Belum ada data sentimen.</p>
                 {/if}
-              </div>
+              </section>
 
-              <!-- Source Distribution -->
-              <div class="glass-card p-6 flex flex-col gap-4">
-                <h3
-                  class="font-bold text-slate-800 dark:text-white flex items-center gap-2"
-                >
-                  <span>📰</span> Proporsi Portal Berita
-                </h3>
+              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
+                <div>
+                  <h3 class="font-bold text-slate-900 dark:text-white">Portal Berita</h3>
+                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Sumber artikel yang masuk database.</p>
+                </div>
                 {#if sourceStats && sourceStats.length > 0}
-                  <div class="space-y-4 mt-2">
+                  <div class="space-y-4">
                     {#each sourceStats as stat}
                       {@const sinfo = getSourceStyle('', stat.source)}
+                      {@const sourcePct = totalArticles > 0 ? Math.max((stat.count / totalArticles) * 100, 1) : 0}
                       <div>
                         <div class="flex justify-between items-center mb-2">
                           <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border shadow-sm {sinfo.colors}">
@@ -987,35 +1174,72 @@
                           </span>
                           <span class="text-xs font-bold text-slate-500">{stat.count.toLocaleString("id-ID")}</span>
                         </div>
-                        <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden flex">
-                          <div class="bg-brand-500 h-2.5 rounded-full" style="width: {Math.max((stat.count / totalArticles) * 100, 1)}%"></div>
+                        <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden">
+                          <div class="bg-brand-500 h-2.5 rounded-full" style="width: {sourcePct}%"></div>
                         </div>
                       </div>
                     {/each}
                   </div>
                 {:else}
-                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">
-                    Belum ada data sumber berita.
-                  </p>
+                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">Belum ada data sumber berita.</p>
                 {/if}
-              </div>
-            </div>
+              </section>
 
-            <div class="glass-card p-6 md:p-8">
-              <h3
-                class="font-bold text-slate-800 dark:text-white mb-3 flex items-center gap-2 text-base"
-              >
-                <span>ℹ️</span> Tentang Proyek
-              </h3>
-              <p
-                class="text-sm text-slate-600 dark:text-slate-300 leading-relaxed max-w-3xl"
-              >
-                Dashboard sentimen berita ekonomi Jokowi dari portal <strong
-                  >Detik Finance</strong
-                >. Menggunakan arsitektur <em>Clean Architecture</em> dengan
-                Svelte frontend tema <strong>Liquid Glass</strong>, FastAPI
-                backend asinkron, dan PostgreSQL database.
-              </p>
+              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
+                {#if evalMetrics}
+                  {@const dashboardWrongSentences = evalMismatches.slice(0, 3)}
+                  <div class="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 class="font-bold text-slate-900 dark:text-white">Evaluasi Model</h3>
+                      <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Hasil terhadap data validasi ahli.</p>
+                    </div>
+                    <button class="btn-ghost border border-slate-200 dark:border-slate-800 px-3 py-1.5" on:click={() => navigate('evaluasi')}>
+                      Detail
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Accuracy</p>
+                      <p class="mt-1 text-2xl font-black text-brand-600 dark:text-brand-400">{(evalMetrics.accuracy * 100).toFixed(2)}%</p>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">F1-Score</p>
+                      <p class="mt-1 text-2xl font-black text-indigo-600 dark:text-indigo-400">{(evalMetrics.macro_avg.f1 * 100).toFixed(2)}%</p>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Benar</p>
+                      <p class="mt-1 text-2xl font-black text-emerald-600 dark:text-emerald-400">{evalMetrics.correct.toLocaleString('id-ID')}</p>
+                    </div>
+                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
+                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Salah</p>
+                      <p class="mt-1 text-2xl font-black text-red-600 dark:text-red-400">{evalMetrics.incorrect.toLocaleString('id-ID')}</p>
+                    </div>
+                  </div>
+                  {#if dashboardWrongSentences.length > 0}
+                    <div class="space-y-2">
+                      <p class="text-xs font-bold uppercase tracking-widest text-slate-400">Contoh Salah Prediksi</p>
+                      {#each dashboardWrongSentences as item}
+                        <div class="rounded-lg border border-slate-200 dark:border-slate-800 px-3 py-2">
+                          <p class="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">{item.text}</p>
+                          <p class="mt-1 text-[11px] text-slate-400">
+                            Ahli: <span class="font-semibold">{item.true}</span> · Model: <span class="font-semibold">{item.pred}</span>
+                          </p>
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                {:else}
+                  <div>
+                    <h3 class="font-bold text-slate-900 dark:text-white">Evaluasi Model</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">
+                      Belum ada hasil evaluasi yang ditampilkan. Jalankan evaluasi untuk melihat accuracy, precision, recall, dan F1-score.
+                    </p>
+                  </div>
+                  <button class="btn-primary justify-center" on:click={() => navigate('evaluasi')}>
+                    Jalankan Evaluasi
+                  </button>
+                {/if}
+              </section>
             </div>
           </div>
         {:else if activeTab === "articles"}
@@ -1064,6 +1288,32 @@
                     >
                   {/if}
                   Refresh
+                </button>
+
+                <a
+                  href={api.scraper.exportArticlesUrl()}
+                  target="_blank"
+                  class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                  title="Unduh artikel dengan kolom sentimen dikosongkan"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                  Unduh CSV Artikel
+                </a>
+
+                <button
+                  class="btn-primary shadow-sm bg-brand-500 hover:bg-brand-600 text-white flex items-center gap-2"
+                  on:click={handleSyncSentiment}
+                  disabled={syncLoading}
+                  title="Cocokkan artikel dengan sentimen kalimat yang sudah dianotasi"
+                >
+                  {#if syncLoading}
+                    <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
+                  {:else}
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+                  {/if}
+                  Sinkronisasi Sentimen
                 </button>
               </div>
 
@@ -1137,7 +1387,7 @@
                 class="glass-card p-4 border border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-900/20"
               >
                 <p class="text-sm font-semibold text-red-600 dark:text-red-400">
-                  ⚠️ {articlesError}
+                  {articlesError}
                 </p>
               </div>
             {:else if articlesLoading && articles.length === 0}
@@ -1167,7 +1417,6 @@
               <div
                 class="glass-card p-16 flex flex-col items-center gap-4 text-center"
               >
-                <span class="text-6xl drop-shadow-md">📭</span>
                 <p class="text-xl font-bold text-slate-700 dark:text-slate-200">
                   Belum ada artikel
                 </p>
@@ -1279,17 +1528,84 @@
             {/if}
           </div>
 
+          <!-- SECTION: Prep Artikel -->
+        {:else if activeTab === "prep_articles"}
+          <div class="space-y-6 animate-fade-in max-w-4xl mx-auto">
+            <div class="glass-card p-6 sm:p-8 space-y-6">
+              <div>
+                <h2 class="text-2xl font-bold text-slate-900 dark:text-white">
+                  Prep Artikel
+                </h2>
+                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
+                  Proses isi artikel penuh dengan cleaning, stopword otomatis, dan stemming.
+                  CSV hasil unduhan memakai struktur artikel, tetapi kolom sentimen dikosongkan.
+                </p>
+              </div>
+
+              <div class="grid gap-4 sm:grid-cols-2">
+                <label class="space-y-2">
+                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
+                    Batch Size
+                  </span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="500"
+                    bind:value={articlePrepBatchSize}
+                    class="input-field w-full"
+                    disabled={articlePrepRunning}
+                  />
+                </label>
+
+                <label class="flex items-center gap-3 rounded-lg border border-slate-200 dark:border-slate-800 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    bind:checked={articlePrepForce}
+                    disabled={articlePrepRunning}
+                  />
+                  <span class="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Proses ulang artikel yang sudah diproses
+                  </span>
+                </label>
+              </div>
+
+              <div class="flex flex-wrap gap-3">
+                <button
+                  class="btn-primary"
+                  on:click={runArticlePreprocessing}
+                  disabled={articlePrepRunning}
+                >
+                  {articlePrepRunning ? "Memproses Artikel..." : "Jalankan Prep Artikel"}
+                </button>
+
+                <a
+                  href={api.preprocessing.downloadArticleCsvNoSentimentUrl}
+                  target="_blank"
+                  class="btn-ghost bg-white/50 dark:bg-slate-800/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                  title="Unduh hasil preprocessing artikel tanpa sentimen"
+                >
+                  Unduh CSV Tanpa Sentimen
+                </a>
+              </div>
+
+              {#if articlePrepMessage}
+                <p class="text-sm font-semibold {articlePrepMessage.startsWith('Gagal') ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}">
+                  {articlePrepMessage}
+                </p>
+              {/if}
+
+              <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-4 text-xs text-slate-500 dark:text-slate-400">
+                Format CSV: Year, Month, Date, Title, Content, Content_Preprocessing, URL, sentimen, rangkuman, src_origin, src, urutan, ID_Artikel.
+              </div>
+            </div>
+          </div>
+
           <!-- SECTION: Ingestion -->
         {:else if activeTab === "ingestion"}
           <div class="p-6 md:p-8 space-y-8 animate-fade-in">
             <div
               class="glass-card p-6 sm:p-8 flex flex-col items-center justify-center text-center space-y-6"
             >
-              <div
-                class="w-20 h-20 rounded-full bg-brand-100 dark:bg-brand-900/50 flex items-center justify-center text-4xl shadow-inner"
-              >
-                📥
-              </div>
               <div>
                 <h2 class="text-2xl font-bold text-slate-800 dark:text-white">
                   Ingesti Data
@@ -1297,9 +1613,8 @@
                 <p
                   class="text-slate-500 dark:text-slate-400 mt-2 max-w-lg mx-auto leading-relaxed"
                 >
-                  Unggah dataset hasil <i>scraping</i> dalam format CSV untuk dimasukkan
-                  ke dalam database utama. Kolom yang diwajibkan: Title, Content,
-                  URL, Year, Month.
+                  Unggah dataset hasil <i>scraping</i> dalam format CSV. Setiap upload
+                  akan menghapus dataset lama, lalu memasukkan semua baris CSV.
                 </p>
               </div>
 
@@ -1381,12 +1696,15 @@
                   <p
                     class="text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500"
                   >
-                    Stemmer
+                    NLP Mode
                   </p>
                   <p
                     class="text-sm font-bold text-brand-600 dark:text-brand-400 leading-snug"
                   >
                     {prepStats.stemmer}
+                  </p>
+                  <p class="text-xs text-slate-400 dark:text-slate-500 leading-snug">
+                    Stopword: {prepStats.stopword || "Fallback manual"}
                   </p>
                 </div>
               </div>
@@ -1401,7 +1719,7 @@
                   <h2
                     class="font-bold text-lg text-slate-800 dark:text-white flex items-center gap-2"
                   >
-                    Tahap 1: Ekstraksi Kalimat
+                    Ekstraksi Kalimat
                   </h2>
                   <p
                     class="text-sm text-slate-500 dark:text-slate-400 mt-1 leading-relaxed"
@@ -1417,10 +1735,12 @@
                 >
                   <div class="flex flex-col gap-1 w-full sm:w-auto">
                     <label
+                      for="extract-jaccard-threshold"
                       class="text-[10px] uppercase font-bold text-slate-400 tracking-wider"
                       >Batas Jaccard</label
                     >
                     <input
+                      id="extract-jaccard-threshold"
                       type="number"
                       step="0.01"
                       min="0"
@@ -1512,10 +1832,10 @@
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h3 class="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                    <span>📋</span> Data Kalimat Artikel & Validasi Sentimen Manual
+                    Data Kalimat Tervalidasi
                   </h3>
                   <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                    Tabel kalimat hasil ekstraksi. Kolom <strong>Sentimen</strong> dan <strong>Validasi</strong> diisi secara manual (unduh PDF → anotasi → unggah kembali).
+                    Tabel ini hanya menampilkan kalimat yang sudah valid dan dapat dipakai sebagai ground truth evaluasi/training.
                   </p>
                 </div>
                 <button
@@ -1539,7 +1859,7 @@
               {:else if extractedSentencesPreview && extractedSentencesPreview.items.length > 0}
                 <div class="text-xs text-slate-500 dark:text-slate-400 mb-2">
                   Menampilkan {extractedSentencesOffset + 1}–{Math.min(extractedSentencesOffset + 20, extractedSentencesPreview.total)} dari
-                  <strong>{extractedSentencesPreview.total.toLocaleString('id-ID')}</strong> kalimat
+                  <strong>{extractedSentencesPreview.total.toLocaleString('id-ID')}</strong> kalimat tervalidasi
                 </div>
                 <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700">
                   <table class="w-full text-xs">
@@ -1574,7 +1894,9 @@
                             {/if}
                           </td>
                           <td class="px-3 py-3 text-center align-top">
-                            <span class="inline-block w-12 h-5 rounded border-2 border-dashed border-slate-300 dark:border-slate-600"></span>
+                            <span class="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-bold text-[10px] uppercase tracking-wider">
+                              Valid
+                            </span>
                           </td>
                         </tr>
                       {/each}
@@ -1597,8 +1919,7 @@
                 </div>
               {:else if extractedSentencesPreview}
                 <div class="py-10 text-center">
-                  <span class="text-4xl block mb-3">📭</span>
-                  <p class="text-sm text-slate-500 dark:text-slate-400">Belum ada kalimat terekstrak. Jalankan Ekstraksi Kalimat terlebih dahulu.</p>
+                  <p class="text-sm text-slate-500 dark:text-slate-400">Belum ada kalimat tervalidasi. Unggah CSV anotasi manual terlebih dahulu.</p>
                 </div>
               {:else}
                 <div class="py-8 text-center">
@@ -1607,52 +1928,45 @@
               {/if}
             </div>
 
-            <!-- Upload PDF Anotasi (sebelum preprocessing) -->
-            <div class="glass-card p-6 sm:p-8 space-y-5 border-2 border-dashed border-amber-300 dark:border-amber-700 bg-amber-50/30 dark:bg-amber-900/10">
+            <!-- Upload CSV Anotasi (sebelum preprocessing) -->
+            <div class="glass-card p-6 sm:p-8 space-y-5 border-2 border-dashed border-emerald-300 dark:border-emerald-800 bg-emerald-50/30 dark:bg-emerald-950/10">
               <div class="flex items-start gap-4">
-                <div class="w-12 h-12 rounded-2xl bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center text-2xl shrink-0">📤</div>
                 <div class="flex-1">
-                  <h3 class="font-bold text-slate-800 dark:text-white">Unggah PDF Anotasi Manual</h3>
+                  <h3 class="font-bold text-slate-800 dark:text-white">Unggah CSV Anotasi Manual</h3>
                   <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Setelah mengisi sentimen pada PDF yang diunduh, unggah kembali di sini.
-                    <strong class="text-red-600 dark:text-red-400">Seluruh data ekstraksi sebelumnya akan dihapus</strong> dan diganti dengan data dari PDF ini sesuai kode artikelnya.
+                    Unggah CSV final seperti data validasi OCR.
+                    <strong class="text-red-600 dark:text-red-400">Seluruh data ekstraksi sebelumnya akan dihapus</strong> dan diganti dengan data unggahan ini sesuai kode artikelnya.
                   </p>
                   <p class="text-xs text-amber-600 dark:text-amber-400 font-semibold mt-2">
-                    Kolom PDF: ID Artikel | Kalimat Asli | Sentimen | Validasi
+                    Kolom CSV: ID_Artikel | Kalimat_Asli | Label_Final | Sentimen_Final | Status_Data.
                   </p>
                 </div>
               </div>
 
               <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                <div class="flex-1 w-full p-4 bg-white/50 dark:bg-slate-800/30 rounded-2xl border border-dashed border-amber-300 dark:border-amber-700 hover:border-amber-500 transition-colors">
+                <div class="flex-1 w-full p-4 bg-white/50 dark:bg-slate-800/30 rounded-2xl border border-dashed border-emerald-300 dark:border-emerald-700 hover:border-emerald-500 transition-colors">
+                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">File CSV Final</p>
                   <input
                     type="file"
-                    accept=".pdf"
-                    class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-amber-50 file:text-amber-700 hover:file:bg-amber-100"
-                    on:change={(e) => { annotatedPdfFile = e.target.files[0]; annotatedPdfMessage = ''; annotatedPdfResult = null; uploadLogs = []; }}
-                    disabled={annotatedPdfUploading}
+                    accept=".csv"
+                    class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100"
+                    on:change={(e) => { annotatedCsvFile = e.target.files[0]; annotatedPdfMessage = ''; annotatedPdfResult = null; uploadLogs = []; }}
+                    disabled={annotatedPdfUploading || annotatedCsvUploading}
                   />
                 </div>
                 <div class="flex gap-2 shrink-0">
                   <button
-                    class="btn-primary bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-lg shadow-amber-500/30 whitespace-nowrap"
-                    disabled={!annotatedPdfFile || annotatedPdfUploading}
-                    on:click={handleAnnotatedPdfUpload}
+                    class="btn-primary bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 shadow-lg shadow-emerald-500/30 whitespace-nowrap"
+                    disabled={!annotatedCsvFile || annotatedPdfUploading || annotatedCsvUploading}
+                    on:click={handleAnnotatedCsvUpload}
                   >
-                    {#if annotatedPdfUploading}
+                    {#if annotatedCsvUploading}
                       <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
                       Memproses…
                     {:else}
-                      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
-                      Unggah & Ganti Data
+                      Unggah CSV
                     {/if}
                   </button>
-                  {#if annotatedPdfUploading}
-                    <button
-                      class="px-4 py-2 rounded-2xl bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold text-sm border border-red-200 dark:border-red-800 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
-                      on:click={cancelUpload}
-                    >✕ Batalkan</button>
-                  {/if}
                 </div>
               </div>
 
@@ -1664,7 +1978,9 @@
                   <div class="flex items-center justify-between text-xs font-semibold">
                     <span class="flex items-center gap-2 text-amber-700 dark:text-amber-400">
                       <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                      {#if uploadPhase === 'uploading'}Mengirim & parsing PDF…
+                      {#if uploadPhase === 'uploading'}Mengirim &amp; parsing PDF…
+                      {:else if uploadPhase === 'ocr'}
+                        <span class="text-purple-600 dark:text-purple-400 font-bold">Menjalankan OCR pada PDF scan… (harap tunggu)</span>
                       {:else if uploadPhase === 'deleting'}Menghapus data lama…
                       {:else if uploadPhase === 'inserting'}Menyimpan kalimat ke database…
                       {:else}Memproses…{/if}
@@ -1708,17 +2024,111 @@
 
               {#if annotatedPdfMessage}
                 <div class="flex items-start gap-3 p-4 rounded-2xl {annotatedPdfResult ? 'bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800' : 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'}">
-                  <span class="text-xl shrink-0">{annotatedPdfResult ? '✅' : '❌'}</span>
                   <div>
                     <p class="text-sm font-semibold {annotatedPdfResult ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'}">{annotatedPdfMessage}</p>
                     {#if annotatedPdfResult}
                       <div class="flex flex-wrap gap-4 mt-2 text-xs text-slate-500">
-                        <span>📥 Diimpor: <strong class="text-emerald-600">{annotatedPdfResult.inserted}</strong></span>
-                        <span>⏭️ Dilewati: <strong class="text-amber-600">{annotatedPdfResult.skipped}</strong></span>
-                        {#if annotatedPdfResult.not_found > 0}<span>🔍 Tdk Ditemukan: <strong class="text-red-500">{annotatedPdfResult.not_found}</strong></span>{/if}
-                        <span>📄 Total Diparsing: <strong>{annotatedPdfResult.total_parsed}</strong></span>
+                        <span>Diimpor: <strong class="text-emerald-600">{annotatedPdfResult.inserted}</strong></span>
+                        <span>Dilewati: <strong class="text-amber-600">{annotatedPdfResult.skipped}</strong></span>
+                        {#if annotatedPdfResult.not_found > 0}<span>Tidak ditemukan: <strong class="text-red-500">{annotatedPdfResult.not_found}</strong></span>{/if}
+                        <span>Total diparsing: <strong>{annotatedPdfResult.total_parsed}</strong></span>
                       </div>
                     {/if}
+                  </div>
+                </div>
+              {/if}
+
+              <!-- ═══ Statistik Validasi PDF ═══ -->
+              {#if pdfValidationStats}
+                {@const pct = pdfValidationStats.total > 0 ? Math.round((pdfValidationStats.validated / pdfValidationStats.total) * 100) : 0}
+                {@const sentColors = { Positif: { bg: 'bg-emerald-500', light: 'bg-emerald-50 dark:bg-emerald-900/20', border: 'border-emerald-200 dark:border-emerald-800', text: 'text-emerald-700 dark:text-emerald-300' }, Negatif: { bg: 'bg-red-500', light: 'bg-red-50 dark:bg-red-900/20', border: 'border-red-200 dark:border-red-800', text: 'text-red-700 dark:text-red-300' }, Netral: { bg: 'bg-blue-500', light: 'bg-blue-50 dark:bg-blue-900/20', border: 'border-blue-200 dark:border-blue-800', text: 'text-blue-700 dark:text-blue-300' }, 'Tidak Diketahui': { bg: 'bg-slate-400', light: 'bg-slate-50 dark:bg-slate-800/40', border: 'border-slate-200 dark:border-slate-700', text: 'text-slate-600 dark:text-slate-400' } }}
+                <div class="rounded-3xl overflow-hidden border border-violet-200 dark:border-violet-800/50 bg-gradient-to-br from-violet-50 to-indigo-50 dark:from-violet-900/10 dark:to-indigo-900/10 shadow-lg">
+                  <!-- Header -->
+                  <div class="flex items-center gap-3 px-6 py-4 bg-gradient-to-r from-violet-500 to-indigo-600 text-white">
+                    <div>
+                      <h4 class="font-bold text-base leading-tight">Statistik Data Tervalidasi</h4>
+                      <p class="text-violet-200 text-xs mt-0.5">Ringkasan kolom "Validasi" dari PDF yang diunggah</p>
+                    </div>
+                    <div class="ml-auto text-right">
+                      <p class="text-2xl font-extrabold leading-none">{pdfValidationStats.validated}</p>
+                      <p class="text-violet-200 text-xs">dari {pdfValidationStats.total} data</p>
+                    </div>
+                  </div>
+
+                  <div class="p-5 space-y-5">
+                    <!-- Summary Cards -->
+                    <div class="grid grid-cols-3 gap-3">
+                      <div class="rounded-2xl bg-white/70 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/50 p-4 text-center shadow-sm">
+                        <p class="text-3xl font-extrabold text-slate-800 dark:text-white">{pdfValidationStats.total}</p>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1 font-semibold">Total Baris PDF</p>
+                      </div>
+                      <div class="rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 p-4 text-center shadow-sm">
+                        <p class="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400">{pdfValidationStats.validated}</p>
+                        <p class="text-xs text-emerald-600 dark:text-emerald-500 mt-1 font-semibold">Tervalidasi</p>
+                        <p class="text-[10px] text-emerald-400 mt-0.5">{pct}% dari total</p>
+                      </div>
+                      <div class="rounded-2xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 text-center shadow-sm">
+                        <p class="text-3xl font-extrabold text-amber-600 dark:text-amber-400">{pdfValidationStats.not_validated}</p>
+                        <p class="text-xs text-amber-600 dark:text-amber-500 mt-1 font-semibold">Belum divalidasi</p>
+                        <p class="text-[10px] text-amber-400 mt-0.5">{100 - pct}% dari total</p>
+                      </div>
+                    </div>
+
+                    <!-- Progress Bar Validasi -->
+                    <div class="space-y-2">
+                      <div class="flex justify-between text-xs font-semibold">
+                        <span class="text-slate-600 dark:text-slate-400">Progres Validasi</span>
+                        <span class="text-violet-600 dark:text-violet-400 font-bold">{pct}%</span>
+                      </div>
+                      <div class="relative h-5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden shadow-inner">
+                        <div
+                          class="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 transition-all duration-700 ease-out flex items-center justify-end pr-2"
+                          style="width: {pct}%;"
+                        >
+                          {#if pct > 10}
+                            <span class="text-white text-[10px] font-bold">{pct}%</span>
+                          {/if}
+                        </div>
+                      </div>
+                      <div class="flex justify-between text-[10px] text-slate-400">
+                        <span>0</span>
+                        <span>{pdfValidationStats.total}</span>
+                      </div>
+                    </div>
+
+                    <!-- Breakdown per Sentimen -->
+                    <div>
+                      <p class="text-xs font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-3">Distribusi per Sentimen</p>
+                      <div class="space-y-2.5">
+                        {#each Object.entries(pdfValidationStats.by_sentiment).filter(([k, v]) => v > 0) as [sent, total]}
+                          {@const validated = pdfValidationStats.validated_by_sentiment[sent] || 0}
+                          {@const notval = total - validated}
+                          {@const sentPct = total > 0 ? Math.round((validated / total) * 100) : 0}
+                          {@const colors = sentColors[sent] || sentColors['Tidak Diketahui']}
+                          <div class="rounded-2xl {colors.light} border {colors.border} p-3">
+                            <div class="flex items-center justify-between mb-2">
+                              <div class="flex items-center gap-2">
+                                <span class="font-bold text-sm {colors.text}">{sent}</span>
+                              </div>
+                              <div class="flex items-center gap-3 text-xs">
+                                <span class="text-emerald-600 dark:text-emerald-400 font-bold">Valid {validated}</span>
+                                <span class="text-slate-400">|</span>
+                                <span class="text-amber-500 font-semibold">Belum {notval}</span>
+                                <span class="text-slate-400 font-bold">= {total}</span>
+                              </div>
+                            </div>
+                            <div class="h-2 bg-white/60 dark:bg-slate-700/50 rounded-full overflow-hidden">
+                              <div
+                                class="h-full rounded-full {colors.bg} transition-all duration-700 opacity-80"
+                                style="width: {sentPct}%;"
+                              ></div>
+                            </div>
+                            <p class="text-right text-[10px] text-slate-400 mt-1">{sentPct}% tervalidasi</p>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+
                   </div>
                 </div>
               {/if}
@@ -1764,12 +2174,12 @@
                   <h2
                     class="font-bold text-lg text-slate-800 dark:text-white flex items-center gap-2"
                   >
-                    Tahap 2: Preprocessing NLP
+                    Preprocessing NLP
                   </h2>
                   <p
                     class="text-sm text-slate-500 dark:text-slate-400 mt-1 leading-relaxed"
                   >
-                    Memproses kalimat yang telah diekstrak (Tahap 1) dari
+                    Memproses kalimat yang telah diekstrak dari
                     database melalui tahapan:
                     <span
                       class="font-semibold text-brand-600 dark:text-brand-400"
@@ -1804,7 +2214,7 @@
                 <div>
                   <label
                     class="block text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2"
-                    for="batchSize">Batch Size (artikel per batch)</label
+                    for="batchSize">Batch Size (kalimat per batch)</label
                   >
                   <input
                     id="batchSize"
@@ -1916,6 +2326,42 @@
                   Unduh CSV
                 </a>
 
+                <a
+                  href={api.preprocessing.downloadGroundtruthCsvUrl(true)}
+                  target="_blank"
+                  class="btn-ghost bg-white/50 dark:bg-slate-800/50 border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/40 shadow-sm flex justify-center items-center gap-1 {prepRunning ? 'opacity-50 pointer-events-none' : ''}"
+                  title="Unduh hanya data tervalidasi sebagai ground truth training/evaluasi LogReg"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                  Ground Truth Valid
+                </a>
+
+                <a
+                  href={api.preprocessing.downloadUnlabeledCsvUrl}
+                  target="_blank"
+                  class="btn-ghost bg-white/50 dark:bg-slate-800/50 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 shadow-sm flex justify-center items-center gap-1 {prepRunning ? 'opacity-50 pointer-events-none' : ''}"
+                  title="Unduh kalimat yang belum diberi label sentimen"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                  Belum Berlabel
+                </a>
+
+                <a
+                  href={api.preprocessing.downloadLabeledAsBlankCsvUrl}
+                  target="_blank"
+                  class="btn-ghost bg-white/50 dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-sm flex justify-center items-center gap-1 {prepRunning ? 'opacity-50 pointer-events-none' : ''}"
+                  title="Unduh kalimat yang sudah berlabel, tetapi label sentimennya dikosongkan"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+                  </svg>
+                  Label Dikosongkan
+                </a>
+
                 <button
                   class="btn-ghost bg-red-50/60 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 shadow-sm ml-auto"
                   on:click={resetPreprocessing}
@@ -1952,8 +2398,7 @@
                   <p
                     class="text-sm font-bold text-slate-700 dark:text-slate-200"
                   >
-                    {#if prepRunning}⏳ Sedang memproses…{:else if prepDone}✅
-                      Selesai{:else}📊 Progress{/if}
+                    {#if prepRunning}Sedang memproses…{:else if prepDone}Selesai{:else}Progress{/if}
                   </p>
                   <p
                     class="text-sm font-bold text-brand-600 dark:text-brand-400"
@@ -2231,7 +2676,6 @@
                 </div>
               {:else if prepPreview}
                 <div class="py-10 text-center">
-                  <span class="text-4xl block mb-3">📭</span>
                   <p class="text-sm text-slate-500 dark:text-slate-400">
                     Belum ada artikel yang diproses. Jalankan pipeline terlebih
                     dahulu.
@@ -2249,51 +2693,101 @@
 
           <!-- SECTION: Evaluasi -->
         {:else if activeTab === "evaluasi"}
-          <div class="space-y-6 animate-fade-in max-w-5xl mx-auto">
-            <!-- Header + Config -->
-            <div class="glass-card p-6 sm:p-8">
-              <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-6">
-                <div>
-                  <h2 class="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span>🎯</span> Evaluasi Model Sentimen
-                  </h2>
-                  <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
-                    Bandingkan prediksi model <strong>Logistic Regression + TF-IDF</strong> dengan anotasi manual.
-                    Menghasilkan Confusion Matrix, Precision, Recall, F1-Score per kelas dan agregat.
+          <div class="space-y-6 animate-fade-in max-w-3xl mx-auto">
+            <div class="glass-card p-6 sm:p-8 space-y-6">
+              <div>
+                <h2 class="text-2xl font-bold text-slate-900 dark:text-white">
+                  Evaluasi Model
+                </h2>
+                <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
+                  Upload satu file pipeline model, atau pasangan TF-IDF dan Logistic Regression.
+                  Setelah upload berhasil, sistem langsung menghitung akurasi terhadap data validasi ahli.
+                </p>
+              </div>
+
+              <div class="space-y-4">
+                <label class="space-y-2 block">
+                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
+                    Pipeline Model
+                  </span>
+                  <input
+                    type="file"
+                    accept=".pkl"
+                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                    on:change={(e) => (evalPipelineFile = e.target.files[0])}
+                    disabled={evalModelUploading || evalRunning}
+                  />
+                  <p class="text-xs text-slate-400 dark:text-slate-500">
+                    Gunakan ini jika modelmu satu file pipeline, misalnya model_logreg_sentimen.pkl.
                   </p>
-                </div>
-                <!-- Config -->
-                <div class="flex flex-col gap-3 min-w-[200px]">
-                  <label class="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
-                    <input type="checkbox" bind:checked={evalLimitAll} class="rounded" />
-                    Semua data
-                  </label>
-                  {#if !evalLimitAll}
-                    <div class="flex items-center gap-2">
-                      <label class="text-xs font-bold text-slate-500 whitespace-nowrap">Maks:</label>
-                      <input type="number" min="10" max="10000" bind:value={evalLimit}
-                        class="input-field py-1.5 px-2 text-sm w-24" />
-                    </div>
-                  {/if}
-                  <label class="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400 cursor-pointer">
-                    <input type="checkbox" bind:checked={evalIncludeMismatches} class="rounded" />
-                    Tampilkan mismatch
-                  </label>
-                  <div class="flex gap-2 pt-1">
-                    {#if !evalRunning}
-                      <button class="btn-primary flex items-center gap-2 flex-1 justify-center" on:click={runEvaluation}>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
-                        Jalankan Evaluasi
-                      </button>
-                    {:else}
-                      <button class="px-4 py-2 rounded-2xl bg-red-100 dark:bg-red-900/30 text-red-600 font-semibold text-sm border border-red-200 flex items-center gap-2 flex-1 justify-center" on:click={stopEvaluation}>
-                        <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                        Batalkan
-                      </button>
-                    {/if}
-                  </div>
+                </label>
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                <label class="space-y-2">
+                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
+                    TF-IDF Vectorizer
+                  </span>
+                  <input
+                    type="file"
+                    accept=".pkl"
+                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                    on:change={(e) => (evalTfidfFile = e.target.files[0])}
+                    disabled={evalModelUploading || evalRunning}
+                  />
+                </label>
+
+                <label class="space-y-2">
+                  <span class="text-xs font-bold uppercase tracking-widest text-slate-400">
+                    Logistic Regression
+                  </span>
+                  <input
+                    type="file"
+                    accept=".pkl"
+                    class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                    on:change={(e) => (evalLogregFile = e.target.files[0])}
+                    disabled={evalModelUploading || evalRunning}
+                  />
+                </label>
                 </div>
               </div>
+
+              <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                <button
+                  class="btn-primary justify-center"
+                  on:click={uploadEvaluationModel}
+                  disabled={(!evalPipelineFile && (!evalTfidfFile || !evalLogregFile)) || evalModelUploading || evalRunning}
+                >
+                  {#if evalModelUploading}
+                    Uploading Model...
+                  {:else if evalRunning}
+                    Menghitung Akurasi...
+                  {:else}
+                    Upload Model dan Hitung Akurasi
+                  {/if}
+                </button>
+
+                {#if evalRunning}
+                  <button
+                    class="btn-ghost justify-center border border-slate-200 dark:border-slate-800"
+                    on:click={stopEvaluation}
+                  >
+                    Batalkan
+                  </button>
+                {/if}
+              </div>
+
+              {#if evalModelMessage}
+                <p class="text-sm font-semibold {evalModelMessage.startsWith('Gagal') ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}">
+                  {evalModelMessage}
+                </p>
+              {/if}
+
+              {#if evalError && !evalRunning}
+                <div class="rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/30 px-4 py-3">
+                  <p class="text-sm font-bold text-red-700 dark:text-red-300">Evaluasi belum bisa ditampilkan</p>
+                  <p class="mt-1 text-sm text-red-600 dark:text-red-300">{evalError}</p>
+                </div>
+              {/if}
             </div>
 
             <!-- Progress -->
@@ -2317,99 +2811,75 @@
             {/if}
 
             {#if evalMetrics}
-              <!-- Aggregate Metric Cards -->
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div class="glass-card p-5 text-center">
-                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Accuracy</p>
-                  <p class="text-4xl font-black text-brand-600 dark:text-brand-400">{(evalMetrics.accuracy * 100).toFixed(1)}<span class="text-xl">%</span></p>
-                  <p class="text-xs text-slate-400 mt-1">{evalMetrics.correct}/{evalMetrics.total} benar</p>
+              {@const wrongSentences = evalMismatches.slice(0, 20)}
+              <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="glass-card p-5">
+                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400">Accuracy</p>
+                  <p class="mt-2 text-4xl font-black text-brand-600 dark:text-brand-400">
+                    {(evalMetrics.accuracy * 100).toFixed(2)}%
+                  </p>
+                  <p class="text-xs text-slate-400 mt-1">
+                    {evalMetrics.correct.toLocaleString('id-ID')} / {evalMetrics.total.toLocaleString('id-ID')} benar
+                  </p>
                 </div>
-                <div class="glass-card p-5 text-center">
-                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Macro F1</p>
-                  <p class="text-4xl font-black text-indigo-600 dark:text-indigo-400">{(evalMetrics.macro_avg.f1 * 100).toFixed(1)}<span class="text-xl">%</span></p>
+                <div class="glass-card p-5">
+                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400">Recall</p>
+                  <p class="mt-2 text-4xl font-black text-amber-600 dark:text-amber-400">
+                    {(evalMetrics.macro_avg.recall * 100).toFixed(2)}%
+                  </p>
+                  <p class="text-xs text-slate-400 mt-1">macro average</p>
                 </div>
-                <div class="glass-card p-5 text-center">
-                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Macro Precision</p>
-                  <p class="text-4xl font-black text-emerald-600 dark:text-emerald-400">{(evalMetrics.macro_avg.precision * 100).toFixed(1)}<span class="text-xl">%</span></p>
+                <div class="glass-card p-5">
+                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400">Precision</p>
+                  <p class="mt-2 text-4xl font-black text-emerald-600 dark:text-emerald-400">
+                    {(evalMetrics.macro_avg.precision * 100).toFixed(2)}%
+                  </p>
+                  <p class="text-xs text-slate-400 mt-1">macro average</p>
                 </div>
-                <div class="glass-card p-5 text-center">
-                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">Macro Recall</p>
-                  <p class="text-4xl font-black text-amber-600 dark:text-amber-400">{(evalMetrics.macro_avg.recall * 100).toFixed(1)}<span class="text-xl">%</span></p>
+                <div class="glass-card p-5">
+                  <p class="text-xs font-bold uppercase tracking-widest text-slate-400">F1-Score</p>
+                  <p class="mt-2 text-4xl font-black text-indigo-600 dark:text-indigo-400">
+                    {(evalMetrics.macro_avg.f1 * 100).toFixed(2)}%
+                  </p>
+                  <p class="text-xs text-slate-400 mt-1">macro average</p>
                 </div>
               </div>
 
-              <!-- Per-Class + Confusion Matrix row -->
               <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <!-- Per-Class Table -->
                 <div class="glass-card p-5 sm:p-6 space-y-4">
-                  <h3 class="font-bold text-slate-800 dark:text-white">📋 Metrik Per Kelas</h3>
-                  <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-                    <table class="w-full text-xs">
-                      <thead class="bg-slate-50 dark:bg-slate-800">
-                        <tr>
-                          <th class="px-4 py-3 text-left font-bold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">Kelas</th>
-                          <th class="px-4 py-3 text-right font-bold text-slate-600 dark:text-slate-300 border-b">Precision</th>
-                          <th class="px-4 py-3 text-right font-bold text-slate-600 dark:text-slate-300 border-b">Recall</th>
-                          <th class="px-4 py-3 text-right font-bold text-slate-600 dark:text-slate-300 border-b">F1</th>
-                          <th class="px-4 py-3 text-right font-bold text-slate-600 dark:text-slate-300 border-b">Support</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each evalMetrics.per_class as cls}
-                          {@const color = cls.label === 'Positif' ? 'text-emerald-600 dark:text-emerald-400' : cls.label === 'Negatif' ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400'}
-                          <tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                            <td class="px-4 py-3 font-bold {color}">{cls.label}</td>
-                            <td class="px-4 py-3 text-right font-mono text-slate-700 dark:text-slate-300">{(cls.precision*100).toFixed(1)}%</td>
-                            <td class="px-4 py-3 text-right font-mono text-slate-700 dark:text-slate-300">{(cls.recall*100).toFixed(1)}%</td>
-                            <td class="px-4 py-3 text-right font-bold font-mono {cls.f1 >= 0.8 ? 'text-emerald-600' : cls.f1 >= 0.6 ? 'text-amber-500' : 'text-red-500'}">{(cls.f1*100).toFixed(1)}%</td>
-                            <td class="px-4 py-3 text-right text-slate-500">{cls.support}</td>
-                          </tr>
-                        {/each}
-                        <!-- Weighted avg row -->
-                        <tr class="bg-slate-50/60 dark:bg-slate-800/40 font-semibold">
-                          <td class="px-4 py-3 text-slate-500 text-[11px] uppercase tracking-wide">Weighted Avg</td>
-                          <td class="px-4 py-3 text-right font-mono text-slate-600 dark:text-slate-300">{(evalMetrics.weighted_avg.precision*100).toFixed(1)}%</td>
-                          <td class="px-4 py-3 text-right font-mono text-slate-600 dark:text-slate-300">{(evalMetrics.weighted_avg.recall*100).toFixed(1)}%</td>
-                          <td class="px-4 py-3 text-right font-bold font-mono text-brand-600 dark:text-brand-400">{(evalMetrics.weighted_avg.f1*100).toFixed(1)}%</td>
-                          <td class="px-4 py-3 text-right text-slate-500">{evalMetrics.total}</td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  <div>
+                    <h3 class="font-bold text-slate-900 dark:text-white">Confusion Matrix</h3>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">
+                      Baris = label ahli, kolom = prediksi model.
+                    </p>
                   </div>
-                </div>
-
-                <!-- Confusion Matrix Heatmap -->
-                <div class="glass-card p-5 sm:p-6 space-y-4">
-                  <h3 class="font-bold text-slate-800 dark:text-white">🔲 Confusion Matrix</h3>
-                  <p class="text-xs text-slate-400">Baris = Label Sebenarnya · Kolom = Prediksi Model</p>
                   {#if evalMetrics.confusion_matrix}
                     {@const cm = evalMetrics.confusion_matrix}
                     {@const labels = evalMetrics.labels}
-                    {@const maxVal = Math.max(...cm.flat())}
+                    {@const maxVal = Math.max(...cm.flat(), 1)}
                     <div class="overflow-x-auto">
                       <table class="w-full text-xs border-collapse">
                         <thead>
                           <tr>
-                            <th class="p-2 text-left text-slate-400 text-[10px]">Aktual ↓ / Prediksi →</th>
-                            {#each labels as lbl}
-                              <th class="p-2 text-center font-bold {lbl === 'Positif' ? 'text-emerald-600' : lbl === 'Negatif' ? 'text-red-600' : 'text-blue-600'}">{lbl}</th>
+                            <th class="p-2 text-left text-slate-400">Aktual / Prediksi</th>
+                            {#each labels as label}
+                              <th class="p-2 text-center font-bold text-slate-600 dark:text-slate-300">{label}</th>
                             {/each}
                           </tr>
                         </thead>
                         <tbody>
                           {#each cm as row, ri}
                             <tr>
-                              <td class="p-2 font-bold text-[11px] {labels[ri] === 'Positif' ? 'text-emerald-600' : labels[ri] === 'Negatif' ? 'text-red-600' : 'text-blue-600'}">{labels[ri]}</td>
+                              <td class="p-2 font-bold text-slate-700 dark:text-slate-200">{labels[ri]}</td>
                               {#each row as cell, ci}
-                                {@const intensity = maxVal > 0 ? cell / maxVal : 0}
-                                {@const isDiag = ri === ci}
-                                <td class="p-0">
+                                {@const intensity = cell / maxVal}
+                                {@const isCorrect = ri === ci}
+                                <td class="p-1">
                                   <div
-                                    class="m-1 rounded-xl flex flex-col items-center justify-center p-3 transition-all"
-                                    style="background: {isDiag ? `rgba(16,185,129,${0.1 + intensity * 0.7})` : `rgba(239,68,68,${intensity * 0.5})`}; min-width: 60px;"
+                                    class="rounded-lg p-3 text-center font-black text-lg"
+                                    style="background: {isCorrect ? `rgba(16,185,129,${0.12 + intensity * 0.65})` : `rgba(239,68,68,${0.08 + intensity * 0.45})`};"
                                   >
-                                    <span class="font-black text-xl {isDiag ? 'text-emerald-700 dark:text-emerald-300' : cell > 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-slate-600'}">{cell}</span>
-                                    <span class="text-[9px] {isDiag ? 'text-emerald-500' : 'text-slate-400'}">{maxVal > 0 ? (intensity * 100).toFixed(0) : 0}%</span>
+                                    <span class="{isCorrect ? 'text-emerald-700 dark:text-emerald-200' : 'text-red-700 dark:text-red-200'}">{cell}</span>
                                   </div>
                                 </td>
                               {/each}
@@ -2418,63 +2888,76 @@
                         </tbody>
                       </table>
                     </div>
-                    <!-- Legend -->
-                    <div class="flex gap-4 text-[10px] text-slate-400">
-                      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-emerald-300 inline-block"></span> Benar (diagonal)</span>
-                      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-300 inline-block"></span> Salah prediksi</span>
-                    </div>
                   {/if}
+                </div>
+
+                <div class="glass-card p-5 sm:p-6 space-y-4">
+                  <div>
+                    <h3 class="font-bold text-slate-900 dark:text-white">Recall Per Kelas</h3>
+                    <p class="text-xs text-slate-500 dark:text-slate-400">
+                      Seberapa banyak label ahli yang berhasil dikenali model.
+                    </p>
+                  </div>
+                  <div class="space-y-3">
+                    {#each evalMetrics.per_class as cls}
+                      <div>
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="text-sm font-bold text-slate-700 dark:text-slate-200">{cls.label}</span>
+                          <span class="text-xs font-mono text-slate-500">{(cls.recall * 100).toFixed(2)}%</span>
+                        </div>
+                        <div class="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            class="h-full rounded-full {cls.label === 'Positif' ? 'bg-emerald-500' : cls.label === 'Negatif' ? 'bg-red-500' : 'bg-blue-500'}"
+                            style="width: {Math.max(cls.recall * 100, 1)}%;"
+                          ></div>
+                        </div>
+                        <p class="text-[11px] text-slate-400 mt-1">
+                          support {cls.support.toLocaleString('id-ID')} kalimat
+                        </p>
+                      </div>
+                    {/each}
+                  </div>
                 </div>
               </div>
 
-              <!-- Mismatch Table -->
-              {#if evalMismatches.length > 0}
-                <div class="glass-card p-5 sm:p-6 space-y-4">
-                  <div class="flex items-center justify-between">
-                    <h3 class="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                      <span>⚠️</span> Prediksi Salah (top {evalMismatches.length})
-                    </h3>
-                    <span class="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full font-semibold">{evalMismatches.length} mismatch</span>
-                  </div>
-                  <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 max-h-80 overflow-y-auto">
-                    <table class="w-full text-xs">
-                      <thead class="bg-slate-50 dark:bg-slate-800 sticky top-0">
-                        <tr>
-                          <th class="px-4 py-3 text-left font-bold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">Kalimat (truncated)</th>
-                          <th class="px-4 py-3 text-center font-bold text-slate-600 border-b w-28">Label Asli</th>
-                          <th class="px-4 py-3 text-center font-bold text-slate-600 border-b w-28">Prediksi</th>
-                          <th class="px-4 py-3 text-right font-bold text-slate-600 border-b w-20">Conf.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each evalMismatches as mm, i}
-                          <tr class="border-b border-slate-100 dark:border-slate-800 hover:bg-red-50/30 dark:hover:bg-red-900/10 transition-colors {i % 2 === 0 ? '' : 'bg-slate-50/40 dark:bg-slate-800/20'}">
-                            <td class="px-4 py-2.5 text-slate-600 dark:text-slate-300 font-mono max-w-xs truncate" title={mm.text}>{mm.text}</td>
-                            <td class="px-4 py-2.5 text-center">
-                              <span class="px-2 py-0.5 rounded-full font-semibold {mm.true === 'Positif' ? 'bg-emerald-100 text-emerald-700' : mm.true === 'Negatif' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}">{mm.true}</span>
-                            </td>
-                            <td class="px-4 py-2.5 text-center">
-                              <span class="px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">{mm.pred}</span>
-                            </td>
-                            <td class="px-4 py-2.5 text-right font-mono text-slate-500">{(mm.confidence * 100).toFixed(0)}%</td>
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
-                  </div>
+              <div class="glass-card p-5 sm:p-6 space-y-4">
+                <div>
+                  <h3 class="font-bold text-slate-900 dark:text-white">Kalimat Salah</h3>
+                  <p class="text-xs text-slate-500 dark:text-slate-400">
+                    Kalimat yang label prediksi modelnya berbeda dari label validasi ahli.
+                  </p>
                 </div>
-              {/if}
+                {#if wrongSentences.length > 0}
+                  <div class="space-y-3">
+                    {#each wrongSentences as item}
+                      <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-4">
+                        <p class="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">{item.text}</p>
+                        <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                          <span class="rounded-md bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 px-2 py-1 font-semibold">
+                            Label ahli: {item.true}
+                          </span>
+                          <span class="rounded-md bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-2 py-1 font-semibold">
+                            Prediksi model: {item.pred}
+                          </span>
+                          <span class="rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 px-2 py-1 font-semibold">
+                            Confidence: {(item.confidence * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="text-sm text-slate-500 dark:text-slate-400">
+                    Belum ada kalimat yang salah diprediksi pada sampel mismatch yang diterima.
+                  </p>
+                {/if}
+              </div>
 
             {:else if !evalRunning}
-              <div class="glass-card p-20 flex flex-col items-center gap-4 text-center">
-                <span class="text-7xl drop-shadow-lg">🎯</span>
-                <p class="text-xl font-bold text-slate-700 dark:text-slate-200">Siap Mengevaluasi Model</p>
+              <div class="glass-card p-12 flex flex-col items-center gap-3 text-center">
+                <p class="text-xl font-bold text-slate-700 dark:text-slate-200">Belum Ada Hasil Akurasi</p>
                 <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md">
-                  Klik <strong>Jalankan Evaluasi</strong> untuk membandingkan prediksi model otomatis
-                  dengan anotasi manual yang tersimpan di database.
-                </p>
-                <p class="text-xs text-slate-400 dark:text-slate-500">
-                  Pastikan data telah melalui tahap: Upload PDF → Preprocessing → kemudian evaluasi.
+                  Upload model terlebih dahulu untuk menghitung akurasi terhadap data validasi ahli.
                 </p>
               </div>
             {/if}
@@ -2489,7 +2972,7 @@
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                   <h2 class="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span>📈</span> Analisis TF-IDF
+                    Analisis TF-IDF
                   </h2>
                   <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-xl">
                     Term Frequency–Inverse Document Frequency dari kalimat yang telah dipreprocessing,
@@ -2507,8 +2990,9 @@
                     <option value="Netral">Netral Saja</option>
                   </select>
                   <div class="flex items-center gap-2">
-                    <label class="text-xs font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">Top-N:</label>
+                    <label for="tfidf-top-n" class="text-xs font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">Top-N:</label>
                     <input
+                      id="tfidf-top-n"
                       type="number" min="5" max="1000" bind:value={tfidfTopN}
                       class="input-field py-1.5 px-2 text-sm w-16 text-center shadow-sm"
                     />
@@ -2596,7 +3080,7 @@
                 <div class="glass-card p-5 sm:p-6 space-y-4">
                   <div class="flex items-center justify-between">
                     <h3 class="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                      <span>🌐</span> Top Term Keseluruhan (TF-IDF Global)
+                      Top Term Keseluruhan (TF-IDF Global)
                     </h3>
                     <div class="flex gap-2">
                       <button
@@ -2657,7 +3141,6 @@
 
             {:else if tfidfData}
               <div class="glass-card p-20 flex flex-col items-center gap-4 text-center">
-                <span class="text-6xl drop-shadow-md">📊</span>
                 <p class="text-xl font-bold text-slate-700 dark:text-slate-200">Belum ada data TF-IDF</p>
                 <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md">
                   Pastikan kalimat sudah diekstrak, dianotasi sentimen, dan dipreprocessing terlebih dahulu.
@@ -2674,150 +3157,6 @@
                 </p>
               </div>
             {/if}
-          </div>
-
-        {:else if activeTab === "realtime"}
-          <div class="space-y-6 animate-fade-in max-w-4xl mx-auto">
-            <div class="glass-card p-6 sm:p-10">
-              <div class="text-center mb-8">
-                <span class="text-6xl drop-shadow-lg block mb-6">⚡</span>
-                <h2
-                  class="text-2xl font-bold text-slate-900 dark:text-white mb-3"
-                >
-                  Analisis Sentimen Realtime
-                </h2>
-                <p
-                  class="text-slate-600 dark:text-slate-300 max-w-2xl mx-auto leading-relaxed"
-                >
-                  Ketik atau salin teks berita di bawah ini untuk melihat
-                  prediksi sentimen menggunakan model Logistic Regression yang
-                  telah dilatih.
-                </p>
-              </div>
-
-              <div class="space-y-4">
-                <textarea
-                  bind:value={analyzeText}
-                  class="input-field min-h-[150px] p-4 text-sm resize-y"
-                  placeholder="Masukkan teks yang ingin dianalisis di sini..."
-                ></textarea>
-
-                <div class="flex justify-end">
-                  <button
-                    class="btn-primary px-8 py-3 text-base shadow-xl shadow-brand-500/30"
-                    on:click={async () => {
-                      if (!analyzeText.trim()) return;
-                      analyzeLoading = true;
-                      try {
-                        analyzeResult = await api.nlp.analyze(analyzeText);
-                      } catch (e) {
-                        analyzeResult = { sentiment: "Error", confidence: 0 };
-                      } finally {
-                        analyzeLoading = false;
-                      }
-                    }}
-                    disabled={analyzeLoading || !analyzeText.trim()}
-                  >
-                    {#if analyzeLoading}
-                      <svg
-                        class="w-5 h-5 animate-spin inline-block mr-2"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        ><circle
-                          class="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        /><path
-                          class="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8v8H4z"
-                        /></svg
-                      >
-                      Menganalisis...
-                    {:else}
-                      Mulai Analisis
-                    {/if}
-                  </button>
-                </div>
-              </div>
-
-              {#if analyzeResult}
-                <div
-                  class="mt-8 grid grid-cols-1 {analyzeResult.tfidf_features
-                    ?.length > 0
-                    ? 'lg:grid-cols-2'
-                    : ''} gap-6 animate-fade-in"
-                >
-                  <!-- Hasil Prediksi -->
-                  <div
-                    class="p-6 rounded-2xl bg-white/50 dark:bg-slate-900/50 border border-white/40 dark:border-slate-700/50 shadow-inner flex flex-col items-center justify-center text-center"
-                  >
-                    <p
-                      class="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-4"
-                    >
-                      Hasil Prediksi
-                    </p>
-                    <span
-                      class="text-4xl font-extrabold uppercase tracking-widest px-6 py-2 rounded-xl shadow-md mb-3
-                    {analyzeResult.sentiment.toLowerCase() === 'positif'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300'
-                        : analyzeResult.sentiment.toLowerCase() === 'negatif'
-                          ? 'bg-red-100 text-red-700 dark:bg-red-900/60 dark:text-red-300'
-                          : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}"
-                    >
-                      {analyzeResult.sentiment}
-                    </span>
-                    <p class="text-slate-600 dark:text-slate-300">
-                      Tingkat Keyakinan: <strong
-                        >{(analyzeResult.confidence * 100).toFixed(2)}%</strong
-                      >
-                    </p>
-                  </div>
-
-                  <!-- TF-IDF Features -->
-                  {#if analyzeResult.tfidf_features && analyzeResult.tfidf_features.length > 0}
-                    {@const maxScore = Math.max(
-                      ...analyzeResult.tfidf_features.map((f) => f.score),
-                    )}
-                    <div
-                      class="p-6 rounded-2xl bg-white/50 dark:bg-slate-900/50 border border-white/40 dark:border-slate-700/50 shadow-inner"
-                    >
-                      <p
-                        class="text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-4 text-center lg:text-left"
-                      >
-                        Top 15 Kata Kunci (TF-IDF)
-                      </p>
-                      <div class="space-y-3">
-                        {#each analyzeResult.tfidf_features as feature}
-                          <div class="flex items-center gap-3 group">
-                            <span
-                              class="w-24 text-xs font-semibold text-slate-700 dark:text-slate-300 truncate text-right group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors"
-                              title={feature.word}>{feature.word}</span
-                            >
-                            <div
-                              class="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden shadow-inner flex"
-                            >
-                              <div
-                                class="h-full bg-gradient-to-r from-brand-400 to-indigo-500 rounded-full transition-all duration-1000 ease-out"
-                                style="width: {(feature.score / maxScore) *
-                                  100}%;"
-                              ></div>
-                            </div>
-                            <span
-                              class="w-10 text-[10px] text-slate-500 font-mono text-left"
-                              >{feature.score.toFixed(3)}</span
-                            >
-                          </div>
-                        {/each}
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              {/if}
-            </div>
           </div>
         {/if}
       </main>

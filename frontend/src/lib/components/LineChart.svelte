@@ -9,14 +9,22 @@
 
   const PADDING = { top: 20, right: 16, bottom: 36, left: 44 }
 
+  $: chartYears = emptyYears.length > 0
+    ? emptyYears
+    : Array.from(new Set(
+        series.flatMap(s => s.data.map(d => Number(d[labelKey])).filter(Number.isFinite))
+      )).sort((a, b) => a - b)
+
   $: maxVal = Math.max(
     ...series.flatMap(s => s.data.map(d => d[valueKey])),
     1
   )
   
-  $: innerW = 600
+  let innerW = 600
   $: innerH = height - PADDING.top - PADDING.bottom
-  $: pointDist = emptyYears.length > 1 ? (innerW - PADDING.left - PADDING.right) / (emptyYears.length - 1) : 0
+  $: pointDist = chartYears.length > 1 ? (innerW - PADDING.left - PADDING.right) / (chartYears.length - 1) : 0
+  $: maxVisibleYearLabels = Math.max(2, Math.floor((innerW - PADDING.left - PADDING.right) / 48))
+  $: yearLabelStep = Math.max(1, Math.ceil(chartYears.length / maxVisibleYearLabels))
 
   function pointY(v) {
     return PADDING.top + innerH - (v / maxVal) * innerH
@@ -38,10 +46,10 @@
   let hoveredPoint = null // { x, y, label, value, color, name }
 </script>
 
-<div class="glass-card p-6 animate-slide-up h-full flex flex-col">
+<div class="glass-card pt-6 pb-2 animate-slide-up h-full flex flex-col">
   {#if title}
-    <h3 class="font-bold text-slate-800 dark:text-white mb-4 flex flex-wrap items-center justify-between gap-2">
-      <span class="flex items-center gap-2">📈 {title}</span>
+    <h3 class="font-bold text-slate-800 dark:text-white mb-4 px-6 flex flex-wrap items-center justify-between gap-2">
+      <span class="flex items-center gap-2">{title}</span>
       <div class="flex flex-wrap gap-3">
         {#each series as s}
           <div class="flex items-center gap-1.5 text-[10px] font-bold tracking-wider">
@@ -53,7 +61,7 @@
     </h3>
   {/if}
 
-  <div class="w-full overflow-x-auto flex-1 flex items-end">
+  <div class="w-full overflow-x-auto overflow-y-visible flex-1 flex items-end" bind:clientWidth={innerW}>
     <svg
       viewBox="0 0 {innerW} {height}"
       class="w-full"
@@ -102,8 +110,8 @@
 
       <!-- Draw lines -->
       {#each series as s}
-        {@const pathData = emptyYears.map((y, i) => {
-           const found = s.data.find(d => d[labelKey] === y);
+        {@const pathData = chartYears.map((y, i) => {
+           const found = s.data.find(d => Number(d[labelKey]) === y);
            const val = found ? found[valueKey] : 0;
            return `${i === 0 ? 'M' : 'L'} ${pointX(i)} ${pointY(val)}`;
         }).join(' ')}
@@ -119,14 +127,15 @@
 
       <!-- Draw hover areas and points -->
       {#each series as s}
-        {#each emptyYears as y, i}
-          {@const found = s.data.find(d => d[labelKey] === y)}
+        {#each chartYears as y, i}
+          {@const found = s.data.find(d => Number(d[labelKey]) === y)}
           {@const val = found ? found[valueKey] : 0}
           {@const px = pointX(i)}
           {@const py = pointY(val)}
 
           <!-- Interactive hit area -->
           <circle
+            role="presentation"
             cx={px}
             cy={py}
             r="16"
@@ -148,14 +157,16 @@
       {/each}
 
       <!-- X Axis Labels -->
-      {#each emptyYears as y, i}
-        <text
-          x={pointX(i)}
-          y={PADDING.top + innerH + 20}
-          text-anchor="middle"
-          class="fill-slate-500 dark:fill-slate-400 pointer-events-none"
-          font-size="10"
-        >{y}</text>
+      {#each chartYears as y, i}
+        {#if i === 0 || i === chartYears.length - 1 || i % yearLabelStep === 0}
+          <text
+            x={pointX(i)}
+            y={PADDING.top + innerH + 20}
+            text-anchor="middle"
+            class="fill-slate-500 dark:fill-slate-400 pointer-events-none"
+            font-size="10"
+          >{y}</text>
+        {/if}
       {/each}
 
       <!-- Tooltip Overlays -->

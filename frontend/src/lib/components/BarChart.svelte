@@ -50,7 +50,7 @@
 <div class="glass-card p-6 animate-slide-up">
   {#if title}
     <h3 class="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
-      <span>📊</span> {title}
+      <span>{title}</span>
     </h3>
   {/if}
 
@@ -120,6 +120,7 @@
         {@const isHovered = hoveredIdx === i}
 
         <rect
+          role="presentation"
           x={bx}
           y={by}
           width={bw}

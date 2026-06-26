@@ -4,6 +4,10 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     database_url: str
+    secret_key: str
+    google_client_id: str
+    access_token_expire_minutes: int = 60 * 24 * 7
+    default_user_role: str = "user"
     app_env: str = "development"
     app_title: str = "DailyVerse Sentiment API"
     app_version: str = "1.0.0"

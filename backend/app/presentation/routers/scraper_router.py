@@ -159,12 +159,6 @@ async def upload_csv(
     text = content.decode("utf-8")
     reader = csv.DictReader(io.StringIO(text))
     
-    # Get existing articles to prevent (title, date) and url duplicates
-    result = await db.execute(select(ArticleModel.title, ArticleModel.date, ArticleModel.url))
-    rows = result.all()
-    existing_set = {(r.title, r.date) for r in rows}
-    existing_urls = {r.url for r in rows if r.url}
-    
     imported = 0
     skipped = 0
     errors = 0
@@ -190,11 +184,6 @@ async def upload_csv(
             
             # Determine URL first
             url = row.get("URL", f"csv-import-{row.get('ID_Artikel')}-{imported}")
-            
-            # Duplicate check
-            if (row_title, dt) in existing_set or url in existing_urls:
-                skipped += 1
-                continue
                 
             try:
                 seq = int(row.get("urutan", 0))
@@ -236,8 +225,6 @@ async def upload_csv(
                 source_id=source_id if source_id else None
             )
             new_articles.append(new_article)
-            existing_set.add((row_title, dt))
-            existing_urls.add(url)
             imported += 1
         except Exception as e:
             errors += 1
@@ -294,3 +281,51 @@ async def run_scraper_stream(payload: ScrapeRequest = Depends()):
             yield item
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+@router.get("/articles/export")
+async def export_articles(db: AsyncSession = Depends(get_db)):
+    stmt = select(ArticleModel).order_by(ArticleModel.date.asc(), ArticleModel.sequence.asc().nullslast())
+    result = await db.execute(stmt)
+    articles = result.scalars().all()
+    
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    
+    writer.writerow([
+        "Year",
+        "Month",
+        "Date",
+        "Title",
+        "Content",
+        "URL",
+        "sentimen",
+        "rangkuman",
+        "src_origin",
+        "src",
+        "urutan",
+        "ID_Artikel",
+    ])
+    
+    for a in articles:
+        writer.writerow([
+            a.year,
+            a.month,
+            a.date.strftime("%Y-%m-%d") if a.date else "",
+            a.title or "",
+            a.content or "",
+            a.url or "",
+            "",
+            a.summary or "",
+            a.source_origin or "",
+            a.source or "",
+            a.sequence or "",
+            a.source_id or str(a.id),
+        ])
+        
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=artikel_label_sentimen_dikosongkan.csv"}
+    )

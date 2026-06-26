@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import Base, engine
@@ -14,6 +15,7 @@ from app.presentation.routers.ingestion_router import router as ingestion_router
 from app.presentation.routers.annotation_router import router as annotation_router
 
 from app.presentation.routers.evaluation_router import router as evaluation_router
+from app.presentation.routers.training_router import router as training_router
 
 settings = get_settings()
 
@@ -22,6 +24,13 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE articles DROP CONSTRAINT IF EXISTS articles_url_key"))
+        await conn.execute(text("ALTER TABLE article_sentences ADD COLUMN IF NOT EXISTS is_validated BOOLEAN NOT NULL DEFAULT FALSE"))
+        await conn.execute(text("ALTER TABLE article_sentences ADD COLUMN IF NOT EXISTS validation_status TEXT"))
+        await conn.execute(text("ALTER TABLE article_sentences ADD COLUMN IF NOT EXISTS initial_sentiment TEXT"))
+        await conn.execute(text("ALTER TABLE article_sentences ADD COLUMN IF NOT EXISTS final_sentiment TEXT"))
+        await conn.execute(text("ALTER TABLE article_sentences ADD COLUMN IF NOT EXISTS annotation_note TEXT"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_article_sentences_is_validated ON article_sentences (is_validated)"))
     yield
     await engine.dispose()
 
@@ -48,6 +57,7 @@ app.include_router(preprocessing_router)
 app.include_router(ingestion_router)
 app.include_router(annotation_router)
 app.include_router(evaluation_router)
+app.include_router(training_router)
 
 
 @app.get("/")

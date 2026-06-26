@@ -1,7 +1,6 @@
 from collections.abc import Sequence
 
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.article import Article, ArticleId
@@ -44,26 +43,17 @@ class PostgresArticleRepository(AbstractArticleRepository):
         self._session = session
 
     async def save(self, article: Article) -> Article:
-        stmt = (
-            insert(ArticleModel)
-            .values(**_to_model(article))
-            .on_conflict_do_nothing(index_elements=["url"])
-            .returning(ArticleModel)
-        )
-        result = await self._session.execute(stmt)
-        row = result.scalars().first()
-        return _to_domain(row) if row else article
+        model = ArticleModel(**_to_model(article))
+        self._session.add(model)
+        await self._session.flush()
+        return _to_domain(model)
 
     async def save_many(self, articles: Sequence[Article]) -> int:
         if not articles:
             return 0
-        stmt = (
-            insert(ArticleModel)
-            .values([_to_model(a) for a in articles])
-            .on_conflict_do_nothing(index_elements=["url"])
-        )
-        result = await self._session.execute(stmt)
-        return result.rowcount
+        self._session.add_all([ArticleModel(**_to_model(a)) for a in articles])
+        await self._session.flush()
+        return len(articles)
 
     async def find_by_url(self, url: str) -> Article | None:
         stmt = select(ArticleModel).where(ArticleModel.url == url)

@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -8,16 +7,16 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from dotenv import load_dotenv
 
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.infrastructure.repositories.user_model import UserModel
 
-load_dotenv()
-SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-dailyverse-key")
+settings = get_settings()
+SECRET_KEY = settings.secret_key
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com")
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
+GOOGLE_CLIENT_ID = settings.google_client_id
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/google")
@@ -94,17 +93,16 @@ async def google_auth(request: GoogleAuthRequest, db: AsyncSession = Depends(get
                 username=name,
                 google_id=google_id,
                 picture=picture,
-                role="superadmin" # Force role superadmin for now
+                role=settings.default_user_role,
             )
             db.add(user)
             await db.commit()
             await db.refresh(user)
         else:
-            # Update google specific fields and force role to superadmin
-            if not user.google_id or user.picture != picture or user.role != "superadmin":
+            # Keep the existing application role; only refresh Google profile fields.
+            if not user.google_id or user.picture != picture:
                 user.google_id = google_id
                 user.picture = picture
-                user.role = "superadmin"
                 await db.commit()
                 
         # Generate JWT Token for our app

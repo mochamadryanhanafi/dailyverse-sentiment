@@ -6,6 +6,102 @@
 @layer base {
   :root {
     color-scheme: light dark;
+    --theme-accent-50: #eff6ff;
+    --theme-accent-100: #dbeafe;
+    --theme-accent-300: #93c5fd;
+    --theme-accent-400: #60a5fa;
+    --theme-accent-500: #2563eb;
+    --theme-accent-600: #1d4ed8;
+    --theme-accent-700: #1e40af;
+    --theme-accent-900: #1e3a8a;
+    --theme-page: #f8fafc;
+    --theme-page-dark: #0b1220;
+    --theme-card: rgba(255, 255, 255, 0.84);
+    --theme-card-dark: rgba(15, 23, 42, 0.76);
+    --theme-button: #0f172a;
+    --theme-button-hover: #1e293b;
+    --theme-reflection: rgba(96, 165, 250, 0.28);
+    --theme-reflection-soft: rgba(147, 197, 253, 0.12);
+  }
+  :root[data-theme='economic-green'] {
+    --theme-accent-50: #ecfdf5;
+    --theme-accent-100: #d1fae5;
+    --theme-accent-300: #6ee7b7;
+    --theme-accent-400: #34d399;
+    --theme-accent-500: #059669;
+    --theme-accent-600: #047857;
+    --theme-accent-700: #065f46;
+    --theme-accent-900: #064e3b;
+    --theme-page: #f6fbf8;
+    --theme-page-dark: #07140f;
+    --theme-button: #064e3b;
+    --theme-button-hover: #065f46;
+    --theme-reflection: rgba(52, 211, 153, 0.28);
+    --theme-reflection-soft: rgba(110, 231, 183, 0.12);
+  }
+  :root[data-theme='newsroom-red'] {
+    --theme-accent-50: #fef2f2;
+    --theme-accent-100: #fee2e2;
+    --theme-accent-300: #fca5a5;
+    --theme-accent-400: #f87171;
+    --theme-accent-500: #dc2626;
+    --theme-accent-600: #b91c1c;
+    --theme-accent-700: #991b1b;
+    --theme-accent-900: #7f1d1d;
+    --theme-page: #fbf7f7;
+    --theme-page-dark: #170b0b;
+    --theme-button: #7f1d1d;
+    --theme-button-hover: #991b1b;
+    --theme-reflection: rgba(248, 113, 113, 0.28);
+    --theme-reflection-soft: rgba(252, 165, 165, 0.12);
+  }
+  :root[data-theme='policy-navy'] {
+    --theme-accent-50: #eff6ff;
+    --theme-accent-100: #dbeafe;
+    --theme-accent-300: #93c5fd;
+    --theme-accent-400: #60a5fa;
+    --theme-accent-500: #1d4ed8;
+    --theme-accent-600: #1e40af;
+    --theme-accent-700: #1e3a8a;
+    --theme-accent-900: #172554;
+    --theme-page: #f5f7fb;
+    --theme-page-dark: #07111f;
+    --theme-button: #172554;
+    --theme-button-hover: #1e3a8a;
+    --theme-reflection: rgba(96, 165, 250, 0.28);
+    --theme-reflection-soft: rgba(147, 197, 253, 0.12);
+  }
+  :root[data-theme='ml-cyan'] {
+    --theme-accent-50: #ecfeff;
+    --theme-accent-100: #cffafe;
+    --theme-accent-300: #67e8f9;
+    --theme-accent-400: #22d3ee;
+    --theme-accent-500: #0891b2;
+    --theme-accent-600: #0e7490;
+    --theme-accent-700: #155e75;
+    --theme-accent-900: #164e63;
+    --theme-page: #f3fbfc;
+    --theme-page-dark: #06131a;
+    --theme-button: #164e63;
+    --theme-button-hover: #155e75;
+    --theme-reflection: rgba(34, 211, 238, 0.28);
+    --theme-reflection-soft: rgba(103, 232, 249, 0.12);
+  }
+  :root[data-theme='indonesia'] {
+    --theme-accent-50: #fff1f2;
+    --theme-accent-100: #ffe4e6;
+    --theme-accent-300: #fda4af;
+    --theme-accent-400: #fb7185;
+    --theme-accent-500: #e11d48;
+    --theme-accent-600: #be123c;
+    --theme-accent-700: #9f1239;
+    --theme-accent-900: #881337;
+    --theme-page: #fffafa;
+    --theme-page-dark: #17090d;
+    --theme-button: #9f1239;
+    --theme-button-hover: #be123c;
+    --theme-reflection: rgba(251, 113, 133, 0.28);
+    --theme-reflection-soft: rgba(253, 164, 175, 0.12);
   }
   * {
     @apply border-slate-200 dark:border-slate-700;
@@ -14,30 +110,159 @@
     scroll-behavior: smooth;
   }
   body {
-    @apply font-sans antialiased bg-surface-light dark:bg-surface-dark text-slate-900 dark:text-slate-100 transition-colors duration-300;
+    @apply font-sans antialiased text-slate-900 dark:text-slate-100 transition-colors duration-300;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--theme-accent-50) 70%, transparent) 0%, transparent 22rem),
+      linear-gradient(115deg, transparent 0%, color-mix(in srgb, var(--theme-accent-100) 42%, transparent) 42%, transparent 72%),
+      var(--theme-page);
+  }
+  .dark body {
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--theme-reflection-soft) 75%, transparent) 0%, transparent 24rem),
+      var(--theme-page-dark);
   }
 }
 
 @layer components {
   .glass-card {
-    @apply bg-white/40 dark:bg-slate-900/40 backdrop-blur-2xl border border-white/60 dark:border-white/10 rounded-2xl shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.3)];
+    @apply relative backdrop-blur-xl border border-slate-200/70 dark:border-slate-800 rounded-xl shadow-sm;
+    overflow: visible;
+    background:
+      linear-gradient(155deg, rgba(255,255,255,0.88), transparent 32%),
+      linear-gradient(0deg, var(--theme-card), var(--theme-card));
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.86),
+      0 12px 30px rgba(15,23,42,0.055);
+  }
+  .glass-card.overflow-visible {
+    overflow: visible;
+  }
+  .glass-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(120deg, transparent 0%, color-mix(in srgb, var(--theme-accent-100) 34%, transparent) 32%, transparent 50%),
+      radial-gradient(circle at top right, color-mix(in srgb, var(--theme-accent-100) 42%, transparent), transparent 28%);
+    opacity: 0.55;
+    mix-blend-mode: multiply;
+  }
+  .dark .glass-card {
+    background:
+      linear-gradient(165deg, rgba(255,255,255,0.12), transparent 34%),
+      linear-gradient(0deg, var(--theme-card-dark), var(--theme-card-dark));
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.09),
+      0 18px 42px rgba(0,0,0,0.28);
+  }
+  .dark .glass-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(105deg, transparent 0%, var(--theme-reflection-soft) 28%, transparent 46%),
+      repeating-linear-gradient(
+        175deg,
+        transparent 0 18px,
+        rgba(255,255,255,0.035) 19px,
+        transparent 21px
+      );
+    opacity: 0.5;
+    mix-blend-mode: screen;
   }
   .liquid-bg {
-    @apply relative overflow-hidden bg-slate-50 dark:bg-[#0b0f19] transition-colors duration-500 z-0;
+    @apply relative overflow-hidden transition-colors duration-500 z-0;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--theme-accent-50) 78%, transparent), transparent 30rem),
+      linear-gradient(115deg, transparent 0%, color-mix(in srgb, var(--theme-accent-100) 38%, transparent) 48%, transparent 78%),
+      var(--theme-page);
+  }
+  .dark .liquid-bg {
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--theme-reflection-soft) 80%, transparent), transparent 34rem),
+      linear-gradient(115deg, transparent 0%, color-mix(in srgb, var(--theme-reflection-soft) 52%, transparent) 46%, transparent 78%),
+      var(--theme-page-dark);
   }
   .liquid-bg::before {
     content: '';
-    @apply absolute -top-40 -left-40 w-[500px] h-[500px] bg-brand-400/20 dark:bg-brand-600/20 rounded-full blur-[100px] mix-blend-multiply dark:mix-blend-screen pointer-events-none z-[-1];
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      repeating-linear-gradient(
+        168deg,
+        transparent 0 38px,
+        color-mix(in srgb, var(--theme-accent-100) 42%, transparent) 39px,
+        transparent 42px,
+        transparent 88px
+      );
+    opacity: 0.36;
   }
   .liquid-bg::after {
     content: '';
-    @apply absolute top-1/2 right-0 w-[600px] h-[600px] bg-indigo-300/30 dark:bg-indigo-900/30 rounded-full blur-[120px] mix-blend-multiply dark:mix-blend-screen pointer-events-none z-[-1] translate-x-1/3 -translate-y-1/2;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--theme-accent-100) 55%, transparent), transparent 24rem),
+      radial-gradient(circle at 86% 22%, rgba(255,255,255,0.82), transparent 20rem);
+    opacity: 0.7;
+  }
+  .dark .liquid-bg::before {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      repeating-linear-gradient(
+        168deg,
+        transparent 0 34px,
+        color-mix(in srgb, var(--theme-reflection) 22%, transparent) 35px,
+        transparent 38px,
+        transparent 76px
+      ),
+      repeating-linear-gradient(
+        12deg,
+        transparent 0 56px,
+        rgba(255,255,255,0.035) 57px,
+        transparent 60px,
+        transparent 112px
+      );
+    opacity: 0.72;
+    animation: water-reflection 14s ease-in-out infinite alternate;
+    transform: translateZ(0);
+  }
+  .dark .liquid-bg::after {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      linear-gradient(90deg, transparent, rgba(255,255,255,0.045), transparent),
+      linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.04) 48%, transparent 100%);
+    opacity: 0.45;
+    animation: water-sheen 9s ease-in-out infinite alternate;
   }
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-semibold text-sm transition-all duration-200 shadow-lg shadow-brand-500/25 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-lg active:scale-95 text-white font-semibold text-sm transition-all duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed;
+    background: var(--theme-button);
+  }
+  .btn-primary:hover {
+    background: var(--theme-button-hover);
+  }
+  .dark .btn-primary {
+    background: var(--theme-accent-100);
+    color: #0f172a;
+  }
+  .dark .btn-primary:hover {
+    background: var(--theme-accent-300);
   }
   .btn-ghost {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 font-medium text-sm transition-all duration-200;
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium text-sm transition-all duration-200;
   }
   .badge-success {
     @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300;
@@ -52,13 +277,107 @@
     @apply glass-card p-6 flex flex-col gap-1;
   }
   .input-field {
-    @apply w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all duration-200 text-sm;
+    @apply w-full px-4 py-2.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 transition-all duration-200 text-sm;
+    --tw-ring-color: var(--theme-accent-500);
   }
+}
+
+@keyframes water-reflection {
+  from {
+    background-position: 0 0, 0 0;
+    filter: saturate(1);
+  }
+  to {
+    background-position: 58px 28px, -34px 44px;
+    filter: saturate(1.18);
+  }
+}
+
+@keyframes water-sheen {
+  from {
+    opacity: 0.28;
+    transform: translateX(-2%);
+  }
+  to {
+    opacity: 0.56;
+    transform: translateX(2%);
+  }
+}
+
+.dark aside,
+.dark header,
+.dark .theme-picker {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 12px 34px rgba(0,0,0,0.22);
+}
+
+aside,
+header,
+.theme-picker {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.72),
+    0 10px 26px rgba(15,23,42,0.055);
+}
+
+aside,
+header {
+  background:
+    linear-gradient(155deg, rgba(255,255,255,0.76), transparent 36%),
+    color-mix(in srgb, var(--theme-page) 74%, white 26%);
+}
+
+.dark aside,
+.dark header {
+  background:
+    linear-gradient(160deg, rgba(255,255,255,0.1), transparent 38%),
+    color-mix(in srgb, var(--theme-page-dark) 82%, transparent);
+}
+
+.dark .btn-ghost,
+.dark .input-field {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
 }
 
 @layer utilities {
   .scrollbar-thin {
     scrollbar-width: thin;
-    scrollbar-color: theme('colors.brand.400') transparent;
+    scrollbar-color: var(--theme-accent-400) transparent;
   }
+}
+
+html[data-theme] .bg-brand-50 { background-color: var(--theme-accent-50); }
+html[data-theme] .bg-brand-100 { background-color: var(--theme-accent-100); }
+html[data-theme] .bg-brand-400 { background-color: var(--theme-accent-400); }
+html[data-theme] .bg-brand-500 { background-color: var(--theme-accent-500); }
+html[data-theme] .bg-brand-600 { background-color: var(--theme-accent-600); }
+html[data-theme] .hover\:bg-brand-600:hover { background-color: var(--theme-accent-600); }
+html[data-theme] .dark\:bg-brand-900\/50:is(.dark *) { background-color: color-mix(in srgb, var(--theme-accent-900) 50%, transparent); }
+html[data-theme] .dark\:bg-brand-900\/40:is(.dark *) { background-color: color-mix(in srgb, var(--theme-accent-900) 40%, transparent); }
+
+html[data-theme] .text-brand-300 { color: var(--theme-accent-300); }
+html[data-theme] .text-brand-400 { color: var(--theme-accent-400); }
+html[data-theme] .text-brand-500 { color: var(--theme-accent-500); }
+html[data-theme] .text-brand-600 { color: var(--theme-accent-600); }
+html[data-theme] .text-brand-700 { color: var(--theme-accent-700); }
+html[data-theme] .hover\:text-brand-500:hover { color: var(--theme-accent-500); }
+html[data-theme] .hover\:text-brand-600:hover { color: var(--theme-accent-600); }
+html[data-theme] .group:hover .group-hover\:text-brand-600 { color: var(--theme-accent-600); }
+html[data-theme] .dark\:text-brand-300:is(.dark *) { color: var(--theme-accent-300); }
+html[data-theme] .dark\:text-brand-400:is(.dark *) { color: var(--theme-accent-400); }
+html[data-theme] .dark\:hover\:text-brand-400:is(.dark *):hover { color: var(--theme-accent-400); }
+html[data-theme] .group:hover .dark\:group-hover\:text-brand-400:is(.dark *) { color: var(--theme-accent-400); }
+
+html[data-theme] .from-brand-400,
+html[data-theme] .from-brand-500 {
+  --tw-gradient-from: var(--theme-accent-500) var(--tw-gradient-from-position);
+  --tw-gradient-to: color-mix(in srgb, var(--theme-accent-500) 0%, transparent) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+html[data-theme] .to-brand-700 {
+  --tw-gradient-to: var(--theme-accent-700) var(--tw-gradient-to-position);
+}
+
+.theme-select option {
+  color: #0f172a;
 }

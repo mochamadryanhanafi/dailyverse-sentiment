@@ -12,7 +12,6 @@
 <div class="glass-card p-6 flex flex-col gap-4 animate-slide-up">
   <div class="flex items-center justify-between">
     <h2 class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
-      <span class="text-xl">🕷️</span>
       Scraper Log
     </h2>
     {#if isRunning}

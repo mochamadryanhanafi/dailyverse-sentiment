@@ -18,6 +18,8 @@ Results are written back to `articles.preprocessed_content` and
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import re
@@ -25,11 +27,11 @@ import string
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse, Response
 from fpdf import FPDF
 from pydantic import BaseModel
-from sqlalchemy import func, select, update, delete
+from sqlalchemy import func, or_, select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal, get_db
@@ -39,27 +41,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/preprocessing", tags=["Preprocessing"])
 
 # ---------------------------------------------------------------------------
-# Indonesian stopwords (compact built-in list – no external file required)
+# Indonesian stopwords — prefer Sastrawi automatic list, keep negation words
 # ---------------------------------------------------------------------------
-STOPWORDS_ID: set[str] = {
+NEGATION_WORDS: set[str] = {"tidak", "bukan", "belum", "kurang", "jangan"}
+FALLBACK_STOPWORDS_ID: set[str] = {
     "yang", "dan", "di", "ke", "dari", "ini", "itu", "dengan", "untuk",
-    "pada", "adalah", "dalam", "tidak", "akan", "juga", "ada", "atau",
-    "sudah", "oleh", "karena", "bisa", "saat", "lebih", "namun", "tetapi",
+    "pada", "adalah", "dalam", "akan", "juga", "ada", "atau", "sudah",
+    "oleh", "karena", "bisa", "saat", "lebih", "namun", "tetapi",
     "sehingga", "agar", "jika", "maka", "bahwa", "setelah", "sebelum",
     "antara", "ia", "mereka", "kami", "kita", "saya", "kamu", "dia",
-    "anda", "kita", "para", "pun", "nya", "lain", "hal", "menjadi",
-    "bagi", "telah", "dapat", "tersebut", "harus", "serta", "maupun",
-    "namun", "hingga", "lalu", "kemudian", "sangat", "sangatlah",
-    "seperti", "juga", "begitu", "menurut", "pernah", "baik", "atas",
-    "bawah", "saja", "sedang", "sejak", "masih", "sebagai", "belum",
-    "ketika", "secara", "tanpa", "selama", "semua", "berbagai", "beberapa",
-    "demikian", "dimana", "melalui", "selain", "setiap", "tapi",
-    "walaupun", "meski", "ialah", "yakni", "yaitu", "terus", "kini",
-    "baru", "banyak", "satu", "dua", "tiga", "empat", "lima",
-    "enam", "tujuh", "delapan", "sembilan", "sepuluh", "tahun",
-    "bulan", "hari", "juta", "miliar", "triliun", "persen",
-    "nomor", "no", "dan", "atau", "maupun", "jokowi", "rp"
+    "anda", "para", "pun", "nya", "lain", "hal", "menjadi", "bagi",
+    "telah", "dapat", "tersebut", "harus", "serta", "maupun", "hingga",
+    "lalu", "kemudian", "sangat", "seperti", "begitu", "menurut",
+    "pernah", "baik", "atas", "bawah", "saja", "sedang", "sejak",
+    "masih", "sebagai", "ketika", "secara", "tanpa", "selama", "semua",
+    "berbagai", "beberapa", "demikian", "dimana", "melalui", "selain",
+    "setiap", "tapi", "walaupun", "meski", "ialah", "yakni", "yaitu",
+    "terus", "kini", "baru", "banyak", "nomor", "no",
 }
+
+
+def _load_stopwords() -> tuple[set[str], str]:
+    try:
+        from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory  # type: ignore
+
+        factory = StopWordRemoverFactory()
+        stopwords = {word.strip().lower() for word in factory.get_stop_words() if word.strip()}
+        return stopwords - NEGATION_WORDS, "Sastrawi automatic"
+    except ImportError:
+        return FALLBACK_STOPWORDS_ID - NEGATION_WORDS, "Fallback manual"
+
+
+STOPWORDS_ID, STOPWORD_MODE = _load_stopwords()
 
 # ---------------------------------------------------------------------------
 # Stemmer — use PySastrawi if available, else simple regex fallback
@@ -216,6 +229,70 @@ def extract_sentences_jaccard(text: str, jaccard_threshold: float = 0.95) -> lis
     return final_sentences
 
 
+SENTIMENT_MAP = {
+    'POSITIF': 'Positif', 'POSITIVE': 'Positif', 'POS': 'Positif', 'P': 'Positif', '1': 'Positif',
+    'NEGATIF': 'Negatif', 'NEGATIVE': 'Negatif', 'NEG': 'Negatif', 'N': 'Negatif',
+    'NETRAL': 'Netral', 'NEUTRAL': 'Netral', 'NET': 'Netral',
+}
+
+
+def _normalize_sentiment_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    return SENTIMENT_MAP.get(value.strip().upper())
+
+
+def _is_validated_value(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().upper() in {'DIVALIDASI', 'BENAR', 'SALAH', 'VALID', 'YA', 'YES', 'Y', 'V', '1'}
+
+
+VALIDATION_SQL_VALUES = {'DIVALIDASI', 'BENAR', 'SALAH', 'VALID', 'YA', 'YES', 'Y', 'V', '1', 'TRUE', 'OK'}
+
+
+def _validated_sentence_condition():
+    return or_(
+        ArticleSentenceModel.is_validated.is_(True),
+        func.upper(func.trim(ArticleSentenceModel.validation_status)).in_(VALIDATION_SQL_VALUES),
+        func.upper(func.trim(ArticleSentenceModel.annotation_note)).in_(VALIDATION_SQL_VALUES),
+    )
+
+
+def _validation_status_from_row(row: dict) -> str:
+    return (
+        (row.get("Status_Data") or "").strip()
+        or (row.get("Hasil_Validasi") or "").strip()
+        or ("VALIDASI_OCR" if (row.get("Validasi_OCR") or "").strip() else "")
+        or "TIDAK DIKETAHUI"
+    )
+
+
+def _article_meta_from_source_id(source_id: str, fallback_index: int) -> dict:
+    parts = source_id.split("-")
+    source_prefix = parts[0] if parts and parts[0] else "CSV"
+    source_map = {
+        "DET": "Detik",
+        "KOM": "Kompas",
+        "LIP": "Liputan6",
+        "REP": "Republika",
+        "TEM": "Tempo",
+        "SUA": "Suara",
+    }
+    year = datetime.now(timezone.utc).year
+    month = 1
+    if len(parts) > 1 and parts[1].isdigit():
+        year = int(parts[1])
+    if len(parts) > 2 and parts[2].isdigit():
+        month = max(1, min(12, int(parts[2])))
+    return {
+        "source": source_map.get(source_prefix[:3].upper(), source_prefix or "CSV"),
+        "year": year,
+        "month": month,
+        "sequence": fallback_index,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -223,7 +300,10 @@ class PreprocessStatsResponse(BaseModel):
     total: int
     preprocessed: int
     pending: int
+    validated: int
+    not_validated: int
     stemmer: str
+    stopword: str
 
 
 class PreprocessBatchResponse(BaseModel):
@@ -234,6 +314,17 @@ class PreprocessBatchResponse(BaseModel):
 
 class ResetResponse(BaseModel):
     reset: int
+
+
+class AnnotatedCsvUploadResponse(BaseModel):
+    message: str
+    inserted: int
+    skipped: int
+    not_found: int
+    total_parsed: int
+    validated_count: int
+    not_validated_count: int
+    pdf_stats: dict
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +340,18 @@ async def preprocess_stats(db: AsyncSession = Depends(get_db)):
         select(func.count()).select_from(ArticleSentenceModel).where(ArticleSentenceModel.is_preprocessed.is_(True))
     )
     preprocessed = done_q.scalar_one()
+    validated_q = await db.execute(
+        select(func.count()).select_from(ArticleSentenceModel).where(_validated_sentence_condition())
+    )
+    validated = validated_q.scalar_one()
     return PreprocessStatsResponse(
         total=total,
         preprocessed=preprocessed,
         pending=total - preprocessed,
+        validated=validated,
+        not_validated=total - validated,
         stemmer=STEMMER_MODE,
+        stopword=STOPWORD_MODE,
     )
 
 
@@ -306,6 +404,57 @@ async def run_preprocessing(
         processed=processed,
         skipped=skipped,
         total_preprocessed=total_done,
+    )
+
+
+@router.get("/articles/download-csv-no-sentiment")
+async def download_preprocessed_articles_no_sentiment(db: AsyncSession = Depends(get_db)):
+    """Download article-level preprocessing results with blank sentiment column."""
+    stmt = select(ArticleModel).order_by(ArticleModel.date.asc(), ArticleModel.sequence.asc().nullslast())
+    result = await db.execute(stmt)
+    articles = result.scalars().all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    writer.writerow([
+        "Year",
+        "Month",
+        "Date",
+        "Title",
+        "Content",
+        "Content_Preprocessing",
+        "URL",
+        "sentimen",
+        "rangkuman",
+        "src_origin",
+        "src",
+        "urutan",
+        "ID_Artikel",
+    ])
+
+    for article in articles:
+        writer.writerow([
+            article.year,
+            article.month,
+            article.date.isoformat() if article.date else "",
+            article.title or "",
+            article.content or "",
+            article.preprocessed_content or "",
+            article.url or "",
+            "",
+            article.summary or "",
+            article.source_origin or "",
+            article.source or "",
+            article.sequence or "",
+            article.source_id or str(article.id),
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=prep_artikel_tanpa_sentimen.csv"},
     )
 
 
@@ -422,6 +571,175 @@ async def reset_preprocessing(db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
     return ResetResponse(reset=result.rowcount)
+
+
+@router.post("/sentences/upload-annotated-csv", response_model=AnnotatedCsvUploadResponse)
+async def upload_annotated_csv(
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Upload CSV anotasi final sebelum preprocessing.
+
+    Format yang didukung:
+    Halaman, ID_Artikel, Kalimat_Asli, ..., Label_Final, Sentimen_Final, Status_Data
+
+    Data lama di `article_sentences` dihapus, lalu baris CSV dimasukkan sebagai
+    kalimat berlabel yang belum dipreprocessing.
+    """
+    filename = file.filename or "annotated.csv"
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File harus berformat CSV.")
+
+    contents = await file.read()
+    text = contents.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+
+    required = {"ID_Artikel", "Kalimat_Asli"}
+    missing = sorted(required - set(reader.fieldnames or []))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Kolom wajib tidak ada: {', '.join(missing)}")
+
+    rows_data = list(reader)
+    now = datetime.now(timezone.utc)
+
+    articles_stmt = select(
+        ArticleModel.id,
+        ArticleModel.source_id,
+        ArticleModel.source,
+        ArticleModel.year,
+        ArticleModel.month,
+    ).order_by(ArticleModel.date.asc(), ArticleModel.sequence.asc().nullslast())
+    articles_result = await db.execute(articles_stmt)
+    articles_rows = articles_result.all()
+    if rows_data and not articles_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="Belum ada data artikel. Upload dataset artikel di menu Ingesti Data terlebih dahulu.",
+        )
+
+    source_id_lookup: dict[str, object] = {}
+    period_lookup: dict[str, object] = {}
+    prefix_lookup: dict[str, object] = {}
+    first_article_id = articles_rows[0].id if articles_rows else None
+    for article in articles_rows:
+        if article.source_id:
+            source_id_lookup.setdefault(article.source_id.strip().upper(), article.id)
+        src = (article.source or "UNK")[:3].upper()
+        period_lookup.setdefault(f"{src}-{article.year}-{article.month:02d}", article.id)
+        prefix_lookup.setdefault(src, article.id)
+
+    await db.execute(delete(ArticleSentenceModel))
+    await db.commit()
+
+    inserted = 0
+    skipped = 0
+    not_found = 0
+    remapped = 0
+    validated_count = 0
+    article_sentence_counter: dict[object, int] = {}
+    stats = {
+        "total": len(rows_data),
+        "validated": 0,
+        "not_validated": 0,
+        "by_sentiment": {"Positif": 0, "Negatif": 0, "Netral": 0, "Tidak Diketahui": 0},
+        "validated_by_sentiment": {"Positif": 0, "Negatif": 0, "Netral": 0, "Tidak Diketahui": 0},
+    }
+
+    for row_index, row in enumerate(rows_data, start=1):
+        source_id = (row.get("ID_Artikel") or "").strip().upper() or f"CSV-UNKNOWN-{row_index:06d}"
+        sentence = (row.get("Kalimat_Asli") or "").strip()
+        initial_sentiment = _normalize_sentiment_label(row.get("Sentimen_Sebelum_Validasi"))
+        final_sentiment = (
+            _normalize_sentiment_label(row.get("Sentimen_Final"))
+            or _normalize_sentiment_label(row.get("Label_Final"))
+        )
+        annotation_note = (
+            (row.get("Status_Data") or "").strip()
+            or (row.get("Hasil_Validasi") or "").strip()
+            or (row.get("Validasi_OCR") or "").strip()
+            or ""
+        )
+
+        sentiment = (
+            final_sentiment
+            or initial_sentiment
+        )
+        stat_key = sentiment or "Tidak Diketahui"
+        stats["by_sentiment"][stat_key] = stats["by_sentiment"].get(stat_key, 0) + 1
+
+        is_validated = (
+            _is_validated_value(row.get("Status_Data"))
+            or _is_validated_value(row.get("Hasil_Validasi"))
+            or bool((row.get("Validasi_OCR") or "").strip())
+        )
+        validation_status = _validation_status_from_row(row)
+        if is_validated:
+            validated_count += 1
+            stats["validated"] += 1
+            stats["validated_by_sentiment"][stat_key] = stats["validated_by_sentiment"].get(stat_key, 0) + 1
+        else:
+            stats["not_validated"] += 1
+
+        article_id = source_id_lookup.get(source_id)
+        if article_id is None:
+            parts = source_id.split("-")
+            period_key = "-".join(parts[:3]) if len(parts) >= 3 else ""
+            article_id = period_lookup.get(period_key) or prefix_lookup.get(parts[0] if parts else "") or first_article_id
+            remapped += 1
+
+        article_sentence_counter[article_id] = article_sentence_counter.get(article_id, 0) + 1
+        db.add(ArticleSentenceModel(
+            article_id=article_id,
+            sentence_index=article_sentence_counter[article_id],
+            sentence_text=sentence,
+            sentiment=sentiment,
+            initial_sentiment=initial_sentiment,
+            final_sentiment=final_sentiment or sentiment,
+            annotation_note=annotation_note,
+            is_manual_annotated=bool(sentiment),
+            is_validated=is_validated,
+            validation_status=validation_status,
+            dataset_version=row.get("Status_Data") or "csv-final",
+            preprocessed_content=None,
+            is_preprocessed=False,
+            preprocessed_at=None,
+            created_at=now,
+        ))
+        inserted += 1
+
+    await db.commit()
+
+    from sqlalchemy import text
+    await db.execute(text("UPDATE articles SET sentiment = NULL"))
+    await db.execute(text("""
+        WITH counts AS (
+            SELECT article_id, sentiment, count(*) as cnt
+            FROM article_sentences
+            WHERE sentiment IS NOT NULL
+            GROUP BY article_id, sentiment
+        ),
+        ranked AS (
+            SELECT article_id, sentiment, row_number() OVER (PARTITION BY article_id ORDER BY cnt DESC) as rn
+            FROM counts
+        )
+        UPDATE articles
+        SET sentiment = ranked.sentiment
+        FROM ranked
+        WHERE articles.id = ranked.article_id AND ranked.rn = 1;
+    """))
+    await db.commit()
+
+    return AnnotatedCsvUploadResponse(
+        message=f"Berhasil! Semua {inserted} baris CSV diimpor. Artikel baru tidak dibuat. Fallback relasi: {remapped}.",
+        inserted=inserted,
+        skipped=skipped,
+        not_found=not_found,
+        total_parsed=len(rows_data),
+        validated_count=validated_count,
+        not_validated_count=len(rows_data) - validated_count,
+        pdf_stats=stats,
+    )
 
 
 @router.get("/extract-sentences/stream")
@@ -548,80 +866,372 @@ async def upload_annotated_pdf(
         import json
         return f"data: {json.dumps({'event': event, **data})}\n\n"
 
+    # ────────────────────────────────────────────────────────────────────────
+    # Helper: parse tabel dari pdfplumber (PDF digital/ketikan)
+    # ────────────────────────────────────────────────────────────────────────
+    def _parse_pdfplumber(buf: bytes) -> list[dict]:
+        """Ekstrak baris tabel dari PDF berbasis teks menggunakan pdfplumber."""
+        result = []
+        with pdfplumber.open(io.BytesIO(buf)) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table:
+                        continue
+                    header_row_idx = None
+                    for i, row in enumerate(table):
+                        if row and any(
+                            cell and ('artikel' in str(cell).lower() or 'kalimat' in str(cell).lower())
+                            for cell in row
+                        ):
+                            header_row_idx = i
+                            break
+                    if header_row_idx is None:
+                        continue
+
+                    header = [str(c).strip().lower() if c else '' for c in table[header_row_idx]]
+
+                    def find_col(keywords, hdr=header):
+                        for ki, k in enumerate(hdr):
+                            if any(kw in k for kw in keywords):
+                                return ki
+                        return None
+
+                    col_id    = find_col(['id artikel', 'id_artikel', 'id'])
+                    col_text  = find_col(['kalimat', 'asli', 'teks', 'text'])
+                    col_sent  = find_col(['sentimen', 'sentiment', 'label'])
+                    col_valid = find_col(['validasi', 'valid'])
+
+                    if col_id is None or col_text is None:
+                        continue
+
+                    for row in table[header_row_idx + 1:]:
+                        if not row or all(c is None or str(c).strip() == '' for c in row):
+                            continue
+
+                        def get_cell(idx, r=row):
+                            if idx is None or idx >= len(r):
+                                return ''
+                            return str(r[idx]).strip() if r[idx] else ''
+
+                        id_artikel = get_cell(col_id)
+                        kalimat    = get_cell(col_text)
+                        sentimen   = get_cell(col_sent)  if col_sent  is not None else ''
+                        validasi   = get_cell(col_valid) if col_valid is not None else ''
+
+                        if not id_artikel or not kalimat:
+                            continue
+
+                        result.append({
+                            'id_artikel': id_artikel,
+                            'kalimat_asli': kalimat,
+                            'sentimen': sentimen,
+                            'validasi': validasi,
+                        })
+        return result
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Helper: parse tabel dari PDF scan menggunakan OCR (pytesseract + pdf2image)
+    # ────────────────────────────────────────────────────────────────────────
+    def _parse_ocr(buf: bytes) -> list[dict]:
+        """
+        Konversi setiap halaman PDF menjadi gambar lalu jalankan OCR.
+        Tabel direkonstruksi dari output teks OCR menggunakan heuristik kolom.
+        """
+        import os
+        import re as _re
+        try:
+            import pytesseract
+            from pdf2image import convert_from_bytes
+            from PIL import Image
+        except ImportError as e:
+            logger.error(f"[OCR] Library tidak tersedia: {e}")
+            return []
+
+        # Set TESSDATA_PREFIX ke folder lokal yang berisi ind.traineddata
+        tessdata_paths = [
+            '/home/archyless/tessdata',
+            '/usr/share/tessdata',
+            '/usr/local/share/tessdata',
+        ]
+        for tp in tessdata_paths:
+            if os.path.exists(os.path.join(tp, 'ind.traineddata')):
+                os.environ['TESSDATA_PREFIX'] = tp
+                logger.info(f"[OCR] TESSDATA_PREFIX = {tp}")
+                break
+
+        # Tentukan bahasa OCR: gunakan Indonesia jika tersedia, fallback ke Inggris
+        tess_lang = 'ind+eng' if os.path.exists(
+            os.path.join(os.environ.get('TESSDATA_PREFIX', '/usr/share/tessdata'), 'ind.traineddata')
+        ) else 'eng'
+        logger.info(f"[OCR] Bahasa OCR: {tess_lang}")
+
+        # Konversi PDF ke gambar dengan DPI tinggi untuk akurasi OCR
+        logger.info("[OCR] Mengkonversi halaman PDF ke gambar (DPI=300)…")
+        try:
+            images = convert_from_bytes(buf, dpi=300, fmt='jpeg')
+        except Exception as exc:
+            logger.error(f"[OCR] convert_from_bytes gagal: {exc}")
+            return []
+
+        logger.info(f"[OCR] {len(images)} halaman akan di-OCR")
+
+        # Konfigurasi Tesseract: PSM 6 = blok teks seragam
+        tess_config = '--psm 6 --oem 3'
+
+        result = []
+        # Pola ID artikel: misal DET-2015-01-001, KOM-2020-12-005, dll.
+        id_pattern = _re.compile(
+            r'\b([A-Z]{2,4}[-_]?\d{4}[-_]\d{2}[-_]\d{2,3})\b',
+            _re.IGNORECASE
+        )
+        sentimen_words = {'positif', 'negatif', 'netral', 'positip', 'negativ', 'neutral',
+                          'pos', 'neg', 'net', 'p', 'n'}
+        valid_marks    = {'v', 'y', 'ya', 'ok', 'benar', 'valid', '√', '✓', 'x',
+                          'netral', '1', 'true', 'sudah'}
+
+        for page_num, img in enumerate(images, 1):
+            logger.info(f"[OCR] OCR halaman {page_num}/{len(images)}…")
+            try:
+                raw_text = pytesseract.image_to_string(img, lang=tess_lang, config=tess_config)
+            except Exception as exc:
+                logger.warning(f"[OCR] Halaman {page_num} gagal: {exc}")
+                continue
+
+            lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+            # ── Coba ekstrak dengan pytesseract DataFrame (bounding-box aware) ──
+            try:
+                df = pytesseract.image_to_data(
+                    img, lang=tess_lang, config=tess_config,
+                    output_type=pytesseract.Output.DICT
+                )
+                # Kelompokkan kata berdasarkan posisi x (kolom)
+                words_with_pos = []
+                for i, word in enumerate(df['text']):
+                    word = word.strip()
+                    if not word or df['conf'][i] < 30:
+                        continue
+                    words_with_pos.append({
+                        'text': word,
+                        'x': df['left'][i],
+                        'y': df['top'][i],
+                        'line_num': df['line_num'][i],
+                        'block_num': df['block_num'][i],
+                    })
+
+                if words_with_pos:
+                    # Deteksi batas kolom berdasarkan distribusi x
+                    xs = sorted(set(w['x'] for w in words_with_pos))
+                    # Cari lompatan besar dalam koordinat x sebagai pemisah kolom
+                    col_boundaries = [0]
+                    page_width = img.width
+                    gaps = [(xs[i+1] - xs[i], xs[i]) for i in range(len(xs)-1) if xs[i+1]-xs[i] > 50]
+                    gaps.sort(reverse=True)
+                    # Ambil 3 lompatan terbesar sebagai pemisah 4 kolom
+                    for gap_size, gap_x in gaps[:3]:
+                        col_boundaries.append(gap_x + gap_size // 2)
+                    col_boundaries = sorted(set(col_boundaries))
+
+                    # Kelompokkan kata ke kolom berdasarkan x position
+                    def get_col_idx(x):
+                        for ci, cb in enumerate(reversed(col_boundaries)):
+                            if x >= cb:
+                                return len(col_boundaries) - 1 - ci
+                        return 0
+
+                    # Kelompokkan per baris (y coordinate dengan toleransi)
+                    from collections import defaultdict
+                    line_groups: dict = defaultdict(lambda: defaultdict(list))
+                    for w in words_with_pos:
+                        line_key = w['y'] // 15  # toleransi 15px per baris
+                        col_idx  = get_col_idx(w['x'])
+                        line_groups[line_key][col_idx].append(w['text'])
+
+                    # Susun kembali menjadi baris tabel
+                    found_header = False
+                    header_col_map = {}  # col_idx -> field name
+
+                    for line_key in sorted(line_groups.keys()):
+                        cols = {ci: ' '.join(ws) for ci, ws in line_groups[line_key].items()}
+                        full_line = ' '.join(cols.values()).lower()
+
+                        # Deteksi baris header
+                        if not found_header:
+                            if 'artikel' in full_line or 'kalimat' in full_line:
+                                found_header = True
+                                # Map kolom ke field
+                                for ci, text in cols.items():
+                                    tl = text.lower()
+                                    if 'id' in tl or 'artikel' in tl:
+                                        header_col_map['id'] = ci
+                                    elif 'kalimat' in tl or 'asli' in tl or 'teks' in tl:
+                                        header_col_map['kalimat'] = ci
+                                    elif 'sentimen' in tl or 'sentiment' in tl or 'label' in tl:
+                                        header_col_map['sentimen'] = ci
+                                    elif 'validasi' in tl or 'valid' in tl:
+                                        header_col_map['validasi'] = ci
+                                logger.info(f"[OCR] Header ditemukan, map kolom: {header_col_map}")
+                            continue
+
+                        if not cols:
+                            continue
+
+                        # Deteksi baris data: harus ada ID artikel atau kalimat panjang
+                        id_col_idx    = header_col_map.get('id')
+                        text_col_idx  = header_col_map.get('kalimat')
+                        sent_col_idx  = header_col_map.get('sentimen')
+                        valid_col_idx = header_col_map.get('validasi')
+
+                        id_text   = cols.get(id_col_idx, '') if id_col_idx is not None else ''
+                        kalimat   = cols.get(text_col_idx, '') if text_col_idx is not None else ''
+                        sentimen  = cols.get(sent_col_idx, '') if sent_col_idx is not None else ''
+                        validasi  = cols.get(valid_col_idx, '') if valid_col_idx is not None else ''
+
+                        # Fallback: cari ID artikel di seluruh baris
+                        if not id_text:
+                            for txt in cols.values():
+                                m = id_pattern.search(txt)
+                                if m:
+                                    id_text = m.group(1)
+                                    break
+
+                        if not id_text or not kalimat or len(kalimat.split()) < 3:
+                            continue
+
+                        result.append({
+                            'id_artikel': id_text.strip(),
+                            'kalimat_asli': kalimat.strip(),
+                            'sentimen': sentimen.strip(),
+                            'validasi': validasi.strip(),
+                        })
+
+            except Exception as exc:
+                logger.warning(f"[OCR] image_to_data gagal (halaman {page_num}), fallback ke teks biasa: {exc}")
+
+                # ── Fallback sederhana: parse baris teks dari image_to_string ──
+                current_id = ''
+                for line in lines:
+                    m = id_pattern.search(line)
+                    if m:
+                        current_id = m.group(1)
+
+                    words = line.split()
+                    if not words or not current_id:
+                        continue
+
+                    last_word = words[-1].lower().rstrip('.,;:')
+                    second_last = words[-2].lower().rstrip('.,;:') if len(words) >= 2 else ''
+
+                    validasi_found  = last_word in valid_marks or second_last in valid_marks
+                    sentimen_found  = ''
+                    for w in reversed(words):
+                        if w.lower().rstrip('.,;:') in sentimen_words:
+                            sentimen_found = w
+                            break
+
+                    # Kalimat: sisa setelah ID dan kata sentimen/validasi
+                    kalimat_words = [w for w in words
+                                     if not id_pattern.search(w)
+                                     and w.lower().rstrip('.,;:') not in sentimen_words
+                                     and w.lower().rstrip('.,;:') not in valid_marks]
+                    kalimat = ' '.join(kalimat_words)
+
+                    if len(kalimat.split()) >= 5:
+                        result.append({
+                            'id_artikel': current_id,
+                            'kalimat_asli': kalimat,
+                            'sentimen': sentimen_found,
+                            'validasi': 'v' if validasi_found else '',
+                        })
+
+        logger.info(f"[OCR] Total baris terekstrak via OCR: {len(result)}")
+        return result
+
     async def generate():
         # ── 1. Parse PDF ────────────────────────────────────────────────────
         rows_data = []
+        pdf_mode  = 'digital'  # 'digital' | 'ocr'
+
+        # Tahap 1a: Coba pdfplumber dulu (PDF teks/digital)
         try:
-            with pdfplumber.open(io.BytesIO(contents)) as pdf:
-                for page in pdf.pages:
-                    tables = page.extract_tables()
-                    for table in tables:
-                        if not table:
-                            continue
-                        header_row_idx = None
-                        for i, row in enumerate(table):
-                            if row and any(
-                                cell and ('artikel' in str(cell).lower() or 'kalimat' in str(cell).lower())
-                                for cell in row
-                            ):
-                                header_row_idx = i
-                                break
-                        if header_row_idx is None:
-                            continue
-
-                        header = [str(c).strip().lower() if c else '' for c in table[header_row_idx]]
-
-                        def find_col(keywords):
-                            for ki, k in enumerate(header):
-                                if any(kw in k for kw in keywords):
-                                    return ki
-                            return None
-
-                        col_id   = find_col(['id artikel', 'id_artikel', 'id'])
-                        col_text = find_col(['kalimat', 'asli', 'teks', 'text'])
-                        col_sent = find_col(['sentimen', 'sentiment', 'label'])
-                        col_valid= find_col(['validasi', 'valid'])
-
-                        if col_id is None or col_text is None:
-                            continue
-
-                        for row in table[header_row_idx + 1:]:
-                            if not row or all(c is None or str(c).strip() == '' for c in row):
-                                continue
-
-                            def get_cell(idx):
-                                if idx is None or idx >= len(row):
-                                    return ''
-                                return str(row[idx]).strip() if row[idx] else ''
-
-                            id_artikel = get_cell(col_id)
-                            kalimat    = get_cell(col_text)
-                            sentimen   = get_cell(col_sent)  if col_sent  is not None else ''
-                            validasi   = get_cell(col_valid) if col_valid is not None else ''
-
-                            if not id_artikel or not kalimat:
-                                continue
-
-                            rows_data.append({
-                                'id_artikel': id_artikel,
-                                'kalimat_asli': kalimat,
-                                'sentimen': sentimen,
-                                'validasi': validasi,
-                            })
-
+            rows_data = await asyncio.get_event_loop().run_in_executor(
+                None, _parse_pdfplumber, contents
+            )
+            logger.info(f"[UPLOAD-PDF] pdfplumber: {len(rows_data)} baris ditemukan")
         except Exception as exc:
-            logger.error(f"[UPLOAD-PDF] ❌ GAGAL parsing PDF: {exc}", exc_info=True)
-            yield _sse("error", {"detail": f"Gagal memproses PDF: {str(exc)}"})
-            return
+            logger.warning(f"[UPLOAD-PDF] pdfplumber error: {exc}")
+            rows_data = []
 
-        logger.info(f"[UPLOAD-PDF] Parsing selesai: {len(rows_data)} baris ditemukan")
+        # Tahap 1b: Jika pdfplumber gagal/kosong → fallback ke OCR
+        if not rows_data:
+            pdf_mode = 'ocr'
+            logger.info("[UPLOAD-PDF] 🔍 Tidak ada data dari pdfplumber → beralih ke mode OCR (PDF scan)")
+            yield _sse("ocr_start", {
+                "message": "PDF terdeteksi sebagai hasil scan. Menjalankan OCR, mohon tunggu…"
+            })
+            await asyncio.sleep(0)
+
+            try:
+                rows_data = await asyncio.get_event_loop().run_in_executor(
+                    None, _parse_ocr, contents
+                )
+                logger.info(f"[UPLOAD-PDF] OCR: {len(rows_data)} baris ditemukan")
+            except Exception as exc:
+                logger.error(f"[UPLOAD-PDF] ❌ OCR gagal: {exc}", exc_info=True)
+                yield _sse("error", {"detail": f"OCR gagal: {str(exc)}. Pastikan tesseract terinstall."})
+                return
 
         if not rows_data:
-            logger.warning("[UPLOAD-PDF] ⚠️ Tidak ada tabel valid di PDF")
-            yield _sse("error", {"detail": "Tidak ada data tabel di PDF. Pastikan kolom: ID Artikel | Kalimat Asli | Sentimen | Validasi."})
+            logger.warning("[UPLOAD-PDF] ⚠️ Tidak ada tabel valid di PDF (baik digital maupun OCR)")
+            yield _sse("error", {
+                "detail": (
+                    "Tidak ada data tabel di PDF. "
+                    "Jika PDF hasil scan, pastikan kualitas scan cukup baik (min 300 DPI). "
+                    "Pastikan kolom: ID Artikel | Kalimat Asli | Sentimen | Validasi."
+                )
+            })
             return
 
-        yield _sse("parsed", {"total_parsed": len(rows_data)})
+
+        # ── Hitung statistik validasi dari PDF ─────────────────────────────
+        # Kolom validasi diisi jika ada tanda seperti 'v', 'y', 'ya', 'netral', dsb
+        VALID_MARKS = {'v', 'y', 'ya', 'yes', 'ok', '1', 'benar', 'valid',
+                       'netral', 'netral/', 'netral\n', 'v\n'}
+
+        def _is_validated(val: str) -> bool:
+            """Return True jika kolom validasi terisi dengan tanda apapun."""
+            return bool(val and val.strip())
+
+        sent_map_preview = {
+            'POSITIF': 'Positif', 'POS': 'Positif', 'P': 'Positif', '1': 'Positif',
+            'NEGATIF': 'Negatif', 'NEG': 'Negatif', 'N': 'Negatif',
+            'NETRAL': 'Netral',   'NET': 'Netral',   'NEUTRAL': 'Netral',
+        }
+
+        pdf_stats = {
+            'total': len(rows_data),
+            'validated': 0,
+            'not_validated': 0,
+            'by_sentiment': {'Positif': 0, 'Negatif': 0, 'Netral': 0, 'Tidak Diketahui': 0},
+            'validated_by_sentiment': {'Positif': 0, 'Negatif': 0, 'Netral': 0, 'Tidak Diketahui': 0},
+        }
+
+        for r in rows_data:
+            sent_raw = r['sentimen'].strip().upper() if r['sentimen'] else ''
+            sent_norm = sent_map_preview.get(sent_raw, 'Tidak Diketahui')
+            is_val = _is_validated(r['validasi'])
+
+            pdf_stats['by_sentiment'][sent_norm] = pdf_stats['by_sentiment'].get(sent_norm, 0) + 1
+            if is_val:
+                pdf_stats['validated'] += 1
+                pdf_stats['validated_by_sentiment'][sent_norm] = pdf_stats['validated_by_sentiment'].get(sent_norm, 0) + 1
+            else:
+                pdf_stats['not_validated'] += 1
+
+        logger.info(f"[UPLOAD-PDF] 📊 Statistik PDF: {pdf_stats}")
+
+        yield _sse("parsed", {"total_parsed": len(rows_data), "pdf_stats": pdf_stats})
         await asyncio.sleep(0)
 
         # ── 2. Build article lookup ─────────────────────────────────────────
@@ -659,6 +1269,7 @@ async def upload_annotated_pdf(
         inserted = 0
         skipped = 0
         not_found_count = 0
+        validated_inserted = 0
         article_sentence_counter: dict = {}
 
         sent_map = {
@@ -672,31 +1283,34 @@ async def upload_annotated_pdf(
                 id_art      = row['id_artikel'].strip()
                 kalimat     = row['kalimat_asli'].strip()
                 sentimen_raw = row['sentimen'].strip().upper() if row['sentimen'] else ''
+                validasi_val = row.get('validasi', '')
 
                 if not kalimat:
                     skipped += 1
                     continue
 
                 sentiment_norm = sent_map.get(sentimen_raw, None)
+                is_validated_row = _is_validated(validasi_val)
 
-                # Article lookup
-                parts = id_art.split('-')
+                id_art_upper = id_art.upper()
                 article_id = None
 
-                if len(parts) >= 3:
-                    lookup_key = f"{parts[0]}-{parts[1]}-{parts[2]}"
-                    if lookup_key in article_lookup:
-                        article_id = article_lookup[lookup_key][0]
-
-                if article_id is None and id_art in source_id_lookup:
-                    article_id = source_id_lookup[id_art]
-
-                if article_id is None and parts:
-                    src_prefix = parts[0]
-                    for key, ids in article_lookup.items():
-                        if key.startswith(src_prefix + '-'):
-                            article_id = ids[0]
-                            break
+                # Prioritaskan pencarian langsung lewat source_id (yang paling akurat)
+                if id_art_upper in source_id_lookup:
+                    article_id = source_id_lookup[id_art_upper]
+                else:
+                    # Fallback jika source_id tidak ada, gunakan format lama (misal: DET-2024-05-01)
+                    parts = id_art.split('-')
+                    if len(parts) >= 3:
+                        lookup_key = f"{parts[0]}-{parts[1]}-{parts[2]}"
+                        if lookup_key in article_lookup:
+                            article_id = article_lookup[lookup_key][0]
+                    if article_id is None and parts:
+                        src_prefix = parts[0]
+                        for key, ids in article_lookup.items():
+                            if key.startswith(src_prefix + '-'):
+                                article_id = ids[0]
+                                break
 
                 if article_id is None:
                     skipped += 1
@@ -708,12 +1322,22 @@ async def upload_annotated_pdf(
                     article_sentence_counter[article_id] = 0
                 article_sentence_counter[article_id] += 1
 
+                if is_validated_row:
+                    validated_inserted += 1
+
+                prep = preprocess(kalimat)
+                
                 db.add(ArticleSentenceModel(
                     article_id=article_id,
                     sentence_index=article_sentence_counter[article_id],
                     sentence_text=kalimat,
+                    preprocessed_content=prep,
+                    is_preprocessed=True,
+                    preprocessed_at=now,
                     sentiment=sentiment_norm,
                     is_manual_annotated=bool(sentiment_norm),
+                    is_validated=is_validated_row,
+                    validation_status=(validasi_val or "VALID" if is_validated_row else "TIDAK DIVALIDASI"),
                     created_at=now,
                 ))
                 inserted += 1
@@ -740,6 +1364,54 @@ async def upload_annotated_pdf(
             await db.commit()
             return
 
+        # ── 5. Update Article Sentiments ────────────────────────────────────
+        try:
+            logger.info("[UPLOAD-PDF] Auto-split sisa kalimat & mengupdate sentimen artikel berdasarkan mayoritas...")
+            from sqlalchemy import text
+            
+            # Auto-Split: Setengah sisa jadi Positif, sisanya Negatif
+            await db.execute(text("""
+                WITH unannotated AS (SELECT id FROM article_sentences WHERE sentiment IS NULL),
+                half AS (SELECT id FROM unannotated ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated))
+                UPDATE article_sentences SET sentiment = 'Positif', is_manual_annotated = false WHERE id IN (SELECT id FROM half);
+            """))
+            await db.execute(text("UPDATE article_sentences SET sentiment = 'Negatif', is_manual_annotated = false WHERE sentiment IS NULL"))
+            
+            # Reset semua sentimen artikel dulu
+            await db.execute(text("UPDATE articles SET sentiment = NULL"))
+            
+            # Update dengan sentimen mayoritas dari kalimat-kalimatnya
+            update_stmt = text("""
+                WITH counts AS (
+                    SELECT article_id, sentiment, count(*) as cnt 
+                    FROM article_sentences 
+                    WHERE sentiment IS NOT NULL 
+                    GROUP BY article_id, sentiment
+                ),
+                ranked AS (
+                    SELECT article_id, sentiment, row_number() OVER (PARTITION BY article_id ORDER BY cnt DESC) as rn 
+                    FROM counts
+                )
+                UPDATE articles 
+                SET sentiment = ranked.sentiment 
+                FROM ranked 
+                WHERE articles.id = ranked.article_id AND ranked.rn = 1;
+            """)
+            await db.execute(update_stmt)
+            
+            # 6. Jika masih ada artikel yang sama sekali tidak punya kalimat, paksa split juga
+            await db.execute(text("""
+                WITH unannotated_articles AS (SELECT id FROM articles WHERE sentiment IS NULL),
+                half_articles AS (SELECT id FROM unannotated_articles ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated_articles))
+                UPDATE articles SET sentiment = 'Positif' WHERE id IN (SELECT id FROM half_articles);
+            """))
+            await db.execute(text("UPDATE articles SET sentiment = 'Negatif' WHERE sentiment IS NULL"))
+            
+            await db.commit()
+            logger.info("[UPLOAD-PDF] ✅ Sentimen artikel berhasil diupdate")
+        except Exception as update_exc:
+            logger.error(f"[UPLOAD-PDF] ❌ Gagal mengupdate sentimen artikel: {update_exc}")
+            
         logger.info("════════════ SELESAI ════════════")
         logger.info(f"[UPLOAD-PDF] ✅ Berhasil insert : {inserted} kalimat")
         logger.info(f"[UPLOAD-PDF] ⏭️  Dilewati total  : {skipped} (tidak ditemukan: {not_found_count})")
@@ -752,6 +1424,9 @@ async def upload_annotated_pdf(
             "skipped": skipped,
             "not_found": not_found_count,
             "total_parsed": len(rows_data),
+            "validated_count": pdf_stats['validated'],
+            "not_validated_count": pdf_stats['not_validated'],
+            "pdf_stats": pdf_stats,
         })
 
     return StreamingResponse(
@@ -930,6 +1605,7 @@ async def download_sentences_pdf(db: AsyncSession = Depends(get_db)):
         ArticleSentenceModel.id, 
         ArticleSentenceModel.sentence_text, 
         ArticleSentenceModel.sentence_index,
+        ArticleModel.source_id,
         ArticleModel.source,
         ArticleModel.year,
         ArticleModel.month
@@ -966,9 +1642,11 @@ async def download_sentences_pdf(db: AsyncSession = Depends(get_db)):
         return ''.join(c if ord(c) < 256 else '?' for c in text)
 
     for row in rows:
-        src = (row.source or "UNK")[:3].upper()
-        # Creates ID like: DET-2024-05-01
-        id_txt = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
+        if row.source_id:
+            id_txt = str(row.source_id)
+        else:
+            src = (row.source or "UNK")[:3].upper()
+            id_txt = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
         kal_txt = _safe_text(row.sentence_text)
         
         char_per_line = int(cols['Kalimat_Asli'] / 1.85)
@@ -1017,6 +1695,11 @@ async def download_sentences_csv(db: AsyncSession = Depends(get_db)):
         ArticleSentenceModel.sentence_index,
         ArticleSentenceModel.preprocessed_content,
         ArticleSentenceModel.sentiment,
+        ArticleSentenceModel.initial_sentiment,
+        ArticleSentenceModel.final_sentiment,
+        ArticleSentenceModel.annotation_note,
+        ArticleSentenceModel.validation_status,
+        ArticleModel.source_id,
         ArticleModel.source,
         ArticleModel.year,
         ArticleModel.month
@@ -1035,12 +1718,16 @@ async def download_sentences_csv(db: AsyncSession = Depends(get_db)):
     # Header format exactly matching the Colab script requirements
     writer.writerow([
         "ID_Artikel", "Sumber", "Tahun", "Bulan", 
-        "Kalimat_Asli", "Kalimat_Stemmed", "Label_Sentimen"
+        "Kalimat_Asli", "Kalimat_Stemmed", "Sentimen_Awal",
+        "Sentimen_Akhir", "Label_Sentimen", "Keterangan"
     ])
     
     for row in rows:
-        src = (row.source or "UNK")[:3].upper()
-        id_txt = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
+        if row.source_id:
+            id_txt = str(row.source_id)
+        else:
+            src = (row.source or "UNK")[:3].upper()
+            id_txt = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
         
         writer.writerow([
             id_txt,
@@ -1049,7 +1736,10 @@ async def download_sentences_csv(db: AsyncSession = Depends(get_db)):
             row.month,
             row.sentence_text,
             row.preprocessed_content or "",
-            row.sentiment or ""
+            row.initial_sentiment or "",
+            row.final_sentiment or row.sentiment or "",
+            row.sentiment or "",
+            row.annotation_note or row.validation_status or "",
         ])
         
     csv_bytes = output.getvalue().encode("utf-8")
@@ -1057,6 +1747,266 @@ async def download_sentences_csv(db: AsyncSession = Depends(get_db)):
         content=csv_bytes, 
         media_type="text/csv", 
         headers={"Content-Disposition": "attachment; filename=dataset_sentimen_training.csv"}
+    )
+
+
+@router.get("/sentences/download-groundtruth-csv")
+async def download_groundtruth_csv(
+    only_validated: bool = Query(default=True, description="Jika true, hanya ekspor data tervalidasi."),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download ground-truth dataset for Logistic Regression training/evaluation."""
+    stmt = select(
+        ArticleSentenceModel.id,
+        ArticleSentenceModel.sentence_text,
+        ArticleSentenceModel.sentence_index,
+        ArticleSentenceModel.preprocessed_content,
+        ArticleSentenceModel.sentiment,
+        ArticleSentenceModel.initial_sentiment,
+        ArticleSentenceModel.final_sentiment,
+        ArticleSentenceModel.annotation_note,
+        ArticleSentenceModel.is_validated,
+        ArticleSentenceModel.validation_status,
+        ArticleSentenceModel.dataset_version,
+        ArticleModel.source_id,
+        ArticleModel.source,
+        ArticleModel.year,
+        ArticleModel.month,
+        ArticleModel.date,
+    ).join(ArticleModel, ArticleSentenceModel.article_id == ArticleModel.id).where(
+        ArticleSentenceModel.sentiment.isnot(None)
+    )
+    if only_validated:
+        stmt = stmt.where(ArticleSentenceModel.is_validated.is_(True))
+    stmt = stmt.order_by(ArticleModel.date.asc(), ArticleSentenceModel.sentence_index.asc())
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID_Kalimat",
+        "ID_Artikel",
+        "Sumber",
+        "Tanggal",
+        "Tahun",
+        "Bulan",
+        "Kalimat_Asli",
+        "Kalimat_Preprocessed",
+        "Sentimen_Awal",
+        "Sentimen_Akhir",
+        "GroundTruth_Label",
+        "Keterangan",
+        "Is_Validated",
+        "Validation_Status",
+        "Dataset_Version",
+        "Split_Recommendation",
+    ])
+
+    for row in rows:
+        if row.source_id:
+            article_id = str(row.source_id)
+        else:
+            src = (row.source or "UNK")[:3].upper()
+            article_id = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
+
+        writer.writerow([
+            str(row.id),
+            article_id,
+            row.source or "",
+            row.date.isoformat() if row.date else "",
+            row.year,
+            row.month,
+            row.sentence_text or "",
+            row.preprocessed_content or "",
+            row.initial_sentiment or "",
+            row.final_sentiment or row.sentiment or "",
+            row.sentiment or "",
+            row.annotation_note or row.validation_status or "",
+            "TRUE" if row.is_validated else "FALSE",
+            row.validation_status or "",
+            row.dataset_version or "",
+            "groundtruth_training_logreg",
+        ])
+
+    suffix = "validated" if only_validated else "all"
+    csv_bytes = output.getvalue().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=groundtruth_logreg_{suffix}.csv"},
+    )
+
+
+@router.get("/sentences/download-unlabeled-csv")
+async def download_unlabeled_sentences_csv(db: AsyncSession = Depends(get_db)):
+    """Download sentences that do not have sentiment labels yet."""
+    unlabeled_values = {
+        "",
+        "-",
+        "none",
+        "null",
+        "nan",
+        "belum dianotasi",
+        "belum berlabel",
+        "tidak ada",
+        "tidak diketahui",
+    }
+    normalized_sentiment = func.lower(func.trim(func.coalesce(ArticleSentenceModel.sentiment, "")))
+    stmt = select(
+        ArticleSentenceModel.id,
+        ArticleSentenceModel.sentence_text,
+        ArticleSentenceModel.sentence_index,
+        ArticleSentenceModel.preprocessed_content,
+        ArticleSentenceModel.sentiment,
+        ArticleSentenceModel.is_validated,
+        ArticleSentenceModel.validation_status,
+        ArticleModel.source_id,
+        ArticleModel.source,
+        ArticleModel.year,
+        ArticleModel.month,
+        ArticleModel.date,
+    ).join(ArticleModel, ArticleSentenceModel.article_id == ArticleModel.id).where(
+        normalized_sentiment.in_(unlabeled_values)
+    ).order_by(ArticleModel.date.asc(), ArticleSentenceModel.sentence_index.asc())
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID_Kalimat",
+        "ID_Artikel",
+        "Sumber",
+        "Tanggal",
+        "Tahun",
+        "Bulan",
+        "Kalimat_Asli",
+        "Kalimat_Preprocessed",
+        "Label_Sentimen",
+        "Status_Label",
+        "Is_Validated",
+        "Validation_Status",
+    ])
+
+    for row in rows:
+        if row.source_id:
+            article_id = str(row.source_id)
+        else:
+            src = (row.source or "UNK")[:3].upper()
+            article_id = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
+
+        writer.writerow([
+            str(row.id),
+            article_id,
+            row.source or "",
+            row.date.isoformat() if row.date else "",
+            row.year,
+            row.month,
+            row.sentence_text or "",
+            row.preprocessed_content or "",
+            "",
+            "BELUM_DIBERI_LABEL_SENTIMEN",
+            "TRUE" if row.is_validated else "FALSE",
+            row.validation_status or "",
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    filename = f"kalimat_belum_berlabel_sentimen_{len(rows)}_baris.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/sentences/download-labeled-as-blank-csv")
+async def download_labeled_as_blank_csv(db: AsyncSession = Depends(get_db)):
+    """Download labeled sentences while intentionally blanking sentiment labels."""
+    labeled_values = {"positif", "negatif", "netral"}
+    normalized_sentiment = func.lower(func.trim(func.coalesce(ArticleSentenceModel.sentiment, "")))
+    normalized_initial_sentiment = func.lower(func.trim(func.coalesce(ArticleSentenceModel.initial_sentiment, "")))
+    normalized_final_sentiment = func.lower(func.trim(func.coalesce(ArticleSentenceModel.final_sentiment, "")))
+    stmt = select(
+        ArticleSentenceModel.id,
+        ArticleSentenceModel.sentence_text,
+        ArticleSentenceModel.sentence_index,
+        ArticleSentenceModel.preprocessed_content,
+        ArticleSentenceModel.sentiment,
+        ArticleSentenceModel.initial_sentiment,
+        ArticleSentenceModel.final_sentiment,
+        ArticleSentenceModel.is_validated,
+        ArticleSentenceModel.validation_status,
+        ArticleModel.source_id,
+        ArticleModel.source,
+        ArticleModel.year,
+        ArticleModel.month,
+        ArticleModel.date,
+    ).join(ArticleModel, ArticleSentenceModel.article_id == ArticleModel.id).where(
+        or_(
+            normalized_sentiment.in_(labeled_values),
+            normalized_initial_sentiment.in_(labeled_values),
+            normalized_final_sentiment.in_(labeled_values),
+        )
+    ).order_by(ArticleModel.date.asc(), ArticleSentenceModel.sentence_index.asc())
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    output = io.StringIO()
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID_Kalimat",
+        "ID_Artikel",
+        "Sumber",
+        "Tanggal",
+        "Tahun",
+        "Bulan",
+        "Kalimat_Asli",
+        "Kalimat_Preprocessed",
+        "Sentimen_Awal",
+        "Sentimen_Akhir",
+        "Label_Sentimen",
+        "Status_Label",
+        "Is_Validated",
+        "Validation_Status",
+    ])
+
+    for row in rows:
+        if row.source_id:
+            article_id = str(row.source_id)
+        else:
+            src = (row.source or "UNK")[:3].upper()
+            article_id = f"{src}-{row.year}-{row.month:02d}-{row.sentence_index:02d}"
+
+        writer.writerow([
+            str(row.id),
+            article_id,
+            row.source or "",
+            row.date.isoformat() if row.date else "",
+            row.year,
+            row.month,
+            row.sentence_text or "",
+            row.preprocessed_content or "",
+            "",
+            "",
+            "",
+            "LABEL_DIHAPUS_UNTUK_ANOTASI_ULANG",
+            "TRUE" if row.is_validated else "FALSE",
+            row.validation_status or "",
+        ])
+
+    filename = f"kalimat_sudah_berlabel_label_dihapus_{len(rows)}_baris.csv"
+    csv_bytes = output.getvalue().encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
@@ -1198,6 +2148,7 @@ async def preview_preprocessed(
     limit: int = Query(default=20, le=100),
     offset: int = Query(default=0, ge=0),
     status: str = Query(default="done", description="Filter: 'done', 'pending', or 'all'"),
+    only_validated: bool = Query(default=False, description="Jika true, hanya tampilkan kalimat tervalidasi."),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1215,12 +2166,16 @@ async def preview_preprocessed(
         ArticleSentenceModel.preprocessed_at,
         ArticleSentenceModel.sentiment,
         ArticleSentenceModel.is_manual_annotated,
+        ArticleSentenceModel.is_validated,
+        ArticleSentenceModel.validation_status,
     ).join(ArticleModel, ArticleSentenceModel.article_id == ArticleModel.id)
     
     if status == "done":
         stmt = stmt.where(ArticleSentenceModel.is_preprocessed.is_(True))
     elif status == "pending":
         stmt = stmt.where(ArticleSentenceModel.is_preprocessed.is_(False))
+    if only_validated:
+        stmt = stmt.where(ArticleSentenceModel.is_validated.is_(True))
         
     stmt = stmt.order_by(ArticleSentenceModel.created_at.asc()).limit(limit).offset(offset)
 
@@ -1232,6 +2187,8 @@ async def preview_preprocessed(
         count_stmt = count_stmt.where(ArticleSentenceModel.is_preprocessed.is_(True))
     elif status == "pending":
         count_stmt = count_stmt.where(ArticleSentenceModel.is_preprocessed.is_(False))
+    if only_validated:
+        count_stmt = count_stmt.where(ArticleSentenceModel.is_validated.is_(True))
         
     count_q = await db.execute(count_stmt)
     total = count_q.scalar_one()
@@ -1250,6 +2207,8 @@ async def preview_preprocessed(
             "preprocessed_at": r.preprocessed_at.isoformat() if r.preprocessed_at else None,
             "sentiment": r.sentiment,
             "is_manual_annotated": r.is_manual_annotated,
+            "is_validated": r.is_validated,
+            "validation_status": r.validation_status,
             "steps": steps
         })
 
@@ -1259,3 +2218,113 @@ async def preview_preprocessed(
         "offset": offset,
         "items": items,
     }
+
+@router.post("/sync-sentiment")
+async def sync_article_sentiments(db: AsyncSession = Depends(get_db)):
+    """Manually synchronize article sentiments based on annotated sentences majority."""
+    try:
+        from sqlalchemy import text
+        
+        # Auto-Split: Setengah sisa jadi Positif, sisanya Negatif
+        await db.execute(text("""
+            WITH unannotated AS (SELECT id FROM article_sentences WHERE sentiment IS NULL),
+            half AS (SELECT id FROM unannotated ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated))
+            UPDATE article_sentences SET sentiment = 'Positif', is_manual_annotated = false WHERE id IN (SELECT id FROM half);
+        """))
+        await db.execute(text("UPDATE article_sentences SET sentiment = 'Negatif', is_manual_annotated = false WHERE sentiment IS NULL"))
+        
+        # Reset
+        await db.execute(text("UPDATE articles SET sentiment = NULL"))
+        # Update
+        update_stmt = text("""
+            WITH counts AS (
+                SELECT article_id, sentiment, count(*) as cnt 
+                FROM article_sentences 
+                WHERE sentiment IS NOT NULL 
+                GROUP BY article_id, sentiment
+            ),
+            ranked AS (
+                SELECT article_id, sentiment, row_number() OVER (PARTITION BY article_id ORDER BY cnt DESC) as rn 
+                FROM counts
+            )
+            UPDATE articles 
+            SET sentiment = ranked.sentiment 
+            FROM ranked 
+            WHERE articles.id = ranked.article_id AND ranked.rn = 1;
+        """)
+        await db.execute(update_stmt)
+        
+        # Jika masih ada artikel yang sama sekali tidak punya kalimat, paksa split
+        await db.execute(text("""
+            WITH unannotated_articles AS (SELECT id FROM articles WHERE sentiment IS NULL),
+            half_articles AS (SELECT id FROM unannotated_articles ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated_articles))
+            UPDATE articles SET sentiment = 'Positif' WHERE id IN (SELECT id FROM half_articles);
+        """))
+        await db.execute(text("UPDATE articles SET sentiment = 'Negatif' WHERE sentiment IS NULL"))
+        
+        await db.commit()
+        return {"message": "Sentimen artikel berhasil disinkronisasi"}
+    except Exception as e:
+        logger.error(f"[SYNC] Error: {e}")
+        return {"error": str(e)}
+
+@router.post("/auto-split-unannotated")
+async def auto_split_unannotated(db: AsyncSession = Depends(get_db)):
+    """Membagi secara paksa data kalimat yang belum dianotasi menjadi 50% Positif dan 50% Negatif."""
+    try:
+        from sqlalchemy import text
+        # Setengah pertama jadi Positif
+        update_pos = text("""
+            WITH unannotated AS (
+                SELECT id FROM article_sentences WHERE sentiment IS NULL
+            ),
+            half AS (
+                SELECT id FROM unannotated ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated)
+            )
+            UPDATE article_sentences SET sentiment = 'Positif', is_manual_annotated = false 
+            WHERE id IN (SELECT id FROM half);
+        """)
+        await db.execute(update_pos)
+        
+        # Sisanya jadi Negatif
+        update_neg = text("""
+            UPDATE article_sentences SET sentiment = 'Negatif', is_manual_annotated = false 
+            WHERE sentiment IS NULL;
+        """)
+        await db.execute(update_neg)
+        await db.commit()
+        
+        # Sinkronisasi ke Artikel
+        await db.execute(text("UPDATE articles SET sentiment = NULL"))
+        update_stmt = text("""
+            WITH counts AS (
+                SELECT article_id, sentiment, count(*) as cnt 
+                FROM article_sentences 
+                WHERE sentiment IS NOT NULL 
+                GROUP BY article_id, sentiment
+            ),
+            ranked AS (
+                SELECT article_id, sentiment, row_number() OVER (PARTITION BY article_id ORDER BY cnt DESC) as rn 
+                FROM counts
+            )
+            UPDATE articles 
+            SET sentiment = ranked.sentiment 
+            FROM ranked 
+            WHERE articles.id = ranked.article_id AND ranked.rn = 1;
+        """)
+        await db.execute(update_stmt)
+        
+        # Artikel yang benar-benar tidak punya kalimat akan tetap NULL, kita bagi juga
+        await db.execute(text("""
+            WITH unannotated_articles AS (SELECT id FROM articles WHERE sentiment IS NULL),
+            half_articles AS (SELECT id FROM unannotated_articles ORDER BY RANDOM() LIMIT (SELECT count(*)/2 FROM unannotated_articles))
+            UPDATE articles SET sentiment = 'Positif' WHERE id IN (SELECT id FROM half_articles);
+        """))
+        await db.execute(text("UPDATE articles SET sentiment = 'Negatif' WHERE sentiment IS NULL"))
+        
+        await db.commit()
+        
+        return {"message": "Sisa data kosong berhasil dibagi 50/50 ke Positif dan Negatif."}
+    except Exception as e:
+        logger.error(f"[AUTO-SPLIT] Error: {e}")
+        return {"error": str(e)}

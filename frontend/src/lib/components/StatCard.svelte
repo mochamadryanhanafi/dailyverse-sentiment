@@ -2,18 +2,13 @@
   export let value = 0
   export let label = ''
   export let sublabel = ''
-  export let icon = ''
   export let gradient = 'from-brand-500 to-brand-700'
 </script>
 
-<div class="stat-card animate-fade-in group">
-  <div class="flex items-start justify-between">
+<div class="stat-card animate-fade-in group border-slate-200/70 dark:border-slate-800">
+  <div class="flex items-start justify-between gap-3">
     <p class="text-xs font-semibold uppercase tracking-widest text-slate-500 dark:text-slate-400">{label}</p>
-    {#if icon}
-      <div class="w-9 h-9 rounded-xl bg-gradient-to-br {gradient} flex items-center justify-center text-white text-base shadow-md group-hover:scale-110 transition-transform duration-200">
-        {icon}
-      </div>
-    {/if}
+    <span class="h-2 w-10 rounded-full bg-gradient-to-r {gradient} opacity-80"></span>
   </div>
   <p class="text-3xl font-extrabold text-slate-900 dark:text-white mt-2 tabular-nums">{value.toLocaleString('id-ID')}</p>
   {#if sublabel}

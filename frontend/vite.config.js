@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 
+const apiTarget = process.env.VITE_API_TARGET ?? 'http://localhost:8000'
+
 export default defineConfig({
   plugins: [svelte()],
   server: {
@@ -8,7 +10,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8001',
+        target: apiTarget,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },

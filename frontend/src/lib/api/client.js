@@ -50,16 +50,25 @@ export const api = {
   },
   preprocessing: {
     stats: () => request('/preprocessing/stats'),
+    runArticles: (force = false, batchSize = 100) =>
+      request(`/preprocessing/run?force=${force}&batch_size=${batchSize}`, { method: 'POST' }),
     runStream: (force = false, batchSize = 100) =>
       new EventSource(`${BASE}/preprocessing/run/stream?force=${force}&batch_size=${batchSize}`),
+    downloadArticleCsvNoSentimentUrl: `${BASE}/preprocessing/articles/download-csv-no-sentiment`,
     extractSentencesStream: (jaccardThreshold = 0.95) =>
       new EventSource(`${BASE}/preprocessing/extract-sentences/stream?jaccard_threshold=${jaccardThreshold}`),
     downloadPdfUrl: `${BASE}/preprocessing/sentences/download-pdf`,
     downloadCsvUrl: `${BASE}/preprocessing/sentences/download-csv`,
+    downloadGroundtruthCsvUrl: (onlyValidated = true) =>
+      `${BASE}/preprocessing/sentences/download-groundtruth-csv?only_validated=${onlyValidated}`,
+    downloadUnlabeledCsvUrl: `${BASE}/preprocessing/sentences/download-unlabeled-csv`,
+    downloadLabeledAsBlankCsvUrl: `${BASE}/preprocessing/sentences/download-labeled-as-blank-csv`,
     downloadStepCsvUrl: (step = 'final') => `${BASE}/preprocessing/sentences/download-step-csv?step=${step}`,
     reset: () => request('/preprocessing/reset', { method: 'POST' }),
-    preview: (limit = 20, offset = 0, status = 'done') => {
-      const params = new URLSearchParams({ limit, offset, status })
+    syncSentiment: () => request('/preprocessing/sync-sentiment', { method: 'POST' }),
+    autoSplitUnannotated: () => request('/preprocessing/auto-split-unannotated', { method: 'POST' }),
+    preview: (limit = 20, offset = 0, status = 'done', onlyValidated = false) => {
+      const params = new URLSearchParams({ limit, offset, status, only_validated: onlyValidated })
       return request(`/preprocessing/preview?${params.toString()}`)
     },
     uploadAnnotatedPdf: (file, onEvent) => {
@@ -112,6 +121,14 @@ export const api = {
 
       return controller
     },
+    uploadAnnotatedCsv: (file) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      return request('/preprocessing/sentences/upload-annotated-csv', {
+        method: 'POST',
+        body: formData,
+      })
+    },
     tfidf: (topN = 20, sentimentFilter = 'all') => {
       const params = new URLSearchParams({ top_n: topN, sentiment_filter: sentimentFilter })
       return request(`/preprocessing/tfidf?${params.toString()}`)
@@ -123,10 +140,35 @@ export const api = {
   },
 
   evaluation: {
-    runStream: (limit = 0, includeMismatches = true) => {
-      const params = new URLSearchParams({ limit, include_mismatches: includeMismatches })
+    uploadModel: (tfidfFile, logregFile, pipelineFile = null) => {
+      const formData = new FormData()
+      if (pipelineFile) {
+        formData.append('pipeline_file', pipelineFile)
+      } else {
+        formData.append('tfidf_file', tfidfFile)
+        formData.append('logreg_file', logregFile)
+      }
+      return request('/evaluation/upload-model', {
+        method: 'POST',
+        body: formData,
+      })
+    },
+    runStream: (limit = 0, includeMismatches = true, onlyValidated = true) => {
+      const params = new URLSearchParams({
+        limit,
+        include_mismatches: includeMismatches,
+        only_validated: onlyValidated,
+      })
       return new EventSource(`${BASE}/evaluation/run/stream?${params.toString()}`)
     },
+  },
+
+  training: {
+    train: (testSize = 0.2) => {
+      return request(`/training/train?test_size=${testSize}`, {
+        method: 'POST'
+      })
+    }
   },
 
   ingestion: {
@@ -163,6 +205,7 @@ export const api = {
       if (filters.sortOrder) params.append('sort_order', filters.sortOrder)
       return request(`/scraper/articles?${params.toString()}`)
     },
+    exportArticlesUrl: () => `${BASE}/scraper/articles/export`,
     run: (payload) =>
       request('/scraper/run', {
         method: 'POST',

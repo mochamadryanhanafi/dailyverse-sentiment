@@ -2,7 +2,8 @@ import io
 import uuid
 import pandas as pd
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -27,52 +28,60 @@ async def upload_csv(
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
         
-        # Required column mapping
-        col_mapping = {
-            'Title': 'title',
-            'Content': 'content',
-            'URL': 'url',
-            'Year': 'year',
-            'Month': 'month',
-        }
-        
-        # Check if basic columns exist
-        missing = [c for c in col_mapping.keys() if c not in df.columns]
-        if missing:
-            raise HTTPException(status_code=400, detail=f"Missing required columns: {missing}")
-            
         now = datetime.now(timezone.utc)
-        articles_to_insert = {}
+        await db.execute(delete(ArticleModel))
+
+        articles_to_insert = []
+
+        def clean_value(row, column, default=""):
+            value = row.get(column, default)
+            if pd.isna(value):
+                return default
+            text = str(value).strip()
+            return default if text.lower() == "nan" else text
+
+        def clean_int(row, column, default):
+            try:
+                value = row.get(column, default)
+                if pd.isna(value):
+                    return default
+                return int(value)
+            except Exception:
+                return default
         
         for idx, row in df.iterrows():
-            url = str(row.get('URL', '')).strip()
-            if not url or url == 'nan' or pd.isna(row.get('Content')):
-                continue
-                
+            row_number = idx + 1
+            year = clean_int(row, 'Year', now.year)
+            month = max(1, min(12, clean_int(row, 'Month', now.month)))
+
             # Parse Date
-            dt_date = now.date()
-            if 'Date' in df.columns and not pd.isna(row['Date']):
-                date_str = str(row['Date']).strip()
+            dt_date = datetime(year=year, month=month, day=1).date()
+            date_str = clean_value(row, 'Date', '')
+            if date_str:
                 try:
                     if '/' in date_str and len(date_str) > 2:
                         dt_date = datetime.strptime(date_str, "%d/%m/%Y").date()
                     else:
-                        dt_date = datetime(year=int(row['Year']), month=int(row['Month']), day=int(date_str)).date()
+                        dt_date = datetime(year=year, month=month, day=int(date_str)).date()
                 except Exception:
                     pass
+
+            source_id = clean_value(row, 'ID_Artikel', f"CSV-{row_number:06d}")
+            url = clean_value(row, 'URL', f"csv-ingestion://{source_id}/{row_number}")
+            title = clean_value(row, 'Title', f"Artikel CSV {source_id}")
+            content = clean_value(row, 'Content', title)
                 
-            articles_to_insert[url] = {
+            article_data = {
                 'id': uuid.uuid4(),
-                'year': int(row['Year']) if 'Year' in df.columns and not pd.isna(row['Year']) else now.year,
-                'month': int(row['Month']) if 'Month' in df.columns and not pd.isna(row['Month']) else now.month,
+                'year': year,
+                'month': month,
                 'date': dt_date,
-                'title': str(row['Title']).strip(),
-                'content': str(row['Content']).strip(),
+                'title': title,
+                'content': content,
                 'url': url,
             }
-            
+
             # Map source using ID_Artikel as the primary indicator
-            source_id = str(row['ID_Artikel']).strip() if 'ID_Artikel' in df.columns and not pd.isna(row['ID_Artikel']) else "UNKNOWN"
             source_id_lower = source_id.lower()
             if "lip" in source_id_lower:
                 mapped_src = "Liputan6"
@@ -87,50 +96,44 @@ async def upload_csv(
             elif "sua" in source_id_lower:
                 mapped_src = "Suara"
             else:
-                raw_src = str(row['src']).strip() if 'src' in df.columns and not pd.isna(row['src']) else "UNKNOWN"
+                raw_src = clean_value(row, 'src', clean_value(row, 'Source', 'UNKNOWN'))
                 mapped_src = raw_src
 
-            articles_to_insert[url].update({
+            article_data.update({
                 'source': mapped_src,
-                'source_origin': str(row['src_origin']).strip() if 'src_origin' in df.columns and not pd.isna(row['src_origin']) else None,
-                'sentiment': str(row['sentimen']).strip() if 'sentimen' in df.columns and not pd.isna(row['sentimen']) else None,
-                'summary': str(row['rangkuman']).strip() if 'rangkuman' in df.columns and not pd.isna(row['rangkuman']) else None,
-                'sequence': int(row['urutan']) if 'urutan' in df.columns and not pd.isna(row['urutan']) else None,
-                'source_id': source_id if source_id != "UNKNOWN" else None,
+                'source_origin': clean_value(row, 'src_origin', None),
+                'sentiment': clean_value(row, 'sentimen', None),
+                'summary': clean_value(row, 'rangkuman', None),
+                'sequence': clean_int(row, 'urutan', row_number),
+                'source_id': source_id,
                 'scraped_at': now
             })
             
-        final_inserts = list(articles_to_insert.values())
-        
-        if final_inserts:
-            from sqlalchemy.dialects.postgresql import insert
-            stmt = insert(ArticleModel).values(final_inserts)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=['url'],
-                set_={
-                    'title': stmt.excluded.title,
-                    'content': stmt.excluded.content,
-                    'sentiment': stmt.excluded.sentiment,
-                    'summary': stmt.excluded.summary,
-                    'source': stmt.excluded.source,
-                    'source_origin': stmt.excluded.source_origin,
-                    'sequence': stmt.excluded.sequence,
-                    'source_id': stmt.excluded.source_id,
-                }
-            )
-            await db.execute(stmt)
+            articles_to_insert.append(article_data)
+            
+        if articles_to_insert:
+            # Gunakan bulk insert biasa karena kita sudah menghapus semua data dan tidak mempedulikan duplikasi
+            db.add_all([ArticleModel(**data) for data in articles_to_insert])
         
         # Add Audit Log
         audit = AuditLogModel(
             action="upload_csv",
-            details=f"Uploaded {file.filename} containing {len(final_inserts)} valid/updated articles.",
+            details=(
+                f"Mode=replace_all. Uploaded {file.filename}; "
+                f"inserted={len(articles_to_insert)}, skipped=0."
+            ),
             created_at=now
         )
         db.add(audit)
         
         await db.commit()
         
-        return {"message": "Upload successful", "articles_inserted": len(final_inserts)}
+        return {
+            "message": "Upload successful.",
+            "mode": "replace_all",
+            "articles_inserted": len(articles_to_insert),
+            "skipped_invalid": 0,
+        }
         
     except Exception as e:
         await db.rollback()

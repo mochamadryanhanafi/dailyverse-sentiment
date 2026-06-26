@@ -19,7 +19,7 @@ class ArticleModel(Base):
     date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
     sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -55,7 +55,12 @@ class ArticleSentenceModel(Base):
     
     # NLP & Annotation
     sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    initial_sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    annotation_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_manual_annotated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    is_validated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    validation_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     annotator_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     dataset_version: Mapped[str | None] = mapped_column(Text, nullable=True)
 
