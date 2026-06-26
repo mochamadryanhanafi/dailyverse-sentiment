@@ -2802,7 +2802,7 @@
                 <div class="flex flex-col sm:flex-row sm:items-center gap-3">
                   <button
                     class="btn-primary justify-center"
-                    on:click={runEvaluation}
+                    on:click={() => runEvaluation()}
                     disabled={evalRunning || mlModels.filter(m => m.is_active).length === 0}
                   >
                     {#if evalRunning}
