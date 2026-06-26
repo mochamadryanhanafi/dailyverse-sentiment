@@ -38,6 +38,8 @@ services:
       SCRAPER_TOTAL_TARGET: ${SCRAPER_TOTAL_TARGET:-600}
     ports:
       - "8003:8000"
+    volumes:
+      - backend_models:/app/models
     depends_on:
       db:
         condition: service_healthy
@@ -57,3 +59,4 @@ services:
 
 volumes:
   postgres_data:
+  backend_models:

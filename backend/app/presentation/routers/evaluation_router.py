@@ -599,44 +599,48 @@ async def run_evaluation(
     limit: int = Query(0, description="Maksimum kalimat yang dievaluasi (0 = semua)"),
     only_validated: bool = Query(True, description="Hanya gunakan data validasi ahli"),
     include_mismatches: bool = Query(True, description="Sertakan mismatches"),
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Menjalankan proses evaluasi sebagai Server-Sent Events (SSE).
     """
 
     async def generate() -> AsyncGenerator[str, None]:
-        await _load_models(db)
+        from app.core.database import AsyncSessionLocal
         
-        if not _model_ready():
-            yield _sse("error", {"detail": "Model belum siap atau gagal dimuat."})
-            return
+        async with AsyncSessionLocal() as db:
+            await _load_models(db)
+            
+            if not _model_ready():
+                yield _sse("error", {"detail": "Model belum siap atau gagal dimuat. (File model tidak ditemukan di disk)"})
+                return
 
-        stmt = (
-            select(
-                ArticleSentenceModel.id,
-                ArticleSentenceModel.sentence_text,
-                ArticleSentenceModel.preprocessed_content,
-                ArticleSentenceModel.sentiment,
-                ArticleSentenceModel.initial_sentiment,
-                ArticleSentenceModel.final_sentiment,
-                ArticleSentenceModel.is_validated,
-                ArticleSentenceModel.validation_status,
+            stmt = (
+                select(
+                    ArticleSentenceModel.id,
+                    ArticleSentenceModel.sentence_text,
+                    ArticleSentenceModel.preprocessed_content,
+                    ArticleSentenceModel.sentiment,
+                    ArticleSentenceModel.initial_sentiment,
+                    ArticleSentenceModel.final_sentiment,
+                    ArticleSentenceModel.is_validated,
+                    ArticleSentenceModel.validation_status,
+                )
+                .where(
+                    _labeled_sentence_condition(),
+                    ArticleSentenceModel.sentence_text.isnot(None),
+                )
             )
-            .where(
-                _labeled_sentence_condition(),
-                ArticleSentenceModel.sentence_text.isnot(None),
-            )
-        )
 
-        if only_validated:
-            stmt = stmt.where(_validated_sentence_condition())
+            if only_validated:
+                stmt = stmt.where(_validated_sentence_condition())
 
-        if limit > 0:
-            stmt = stmt.limit(limit)
+            if limit > 0:
+                stmt = stmt.limit(limit)
 
-        result = await db.execute(stmt)
-        rows = result.all()
+            result = await db.execute(stmt)
+            rows = result.all()
+            
+        # Session is closed automatically here, before the slow loop starts
         total_rows = len(rows)
 
         if total_rows == 0:
