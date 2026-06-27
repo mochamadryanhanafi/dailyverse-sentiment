@@ -26,15 +26,23 @@ async def get_rag_context(db: AsyncSession) -> str:
     try:
         # Get basic stats
         total_articles = await db.scalar(select(func.count(ArticleModel.id)))
+        total_sentences = await db.scalar(select(func.count(ArticleSentenceModel.id)))
         
-        # Get sentiments stats (from validated or final sentiment)
-        stmt_pos = select(func.count(ArticleSentenceModel.id)).where(ArticleSentenceModel.final_sentiment == "positif")
-        stmt_neg = select(func.count(ArticleSentenceModel.id)).where(ArticleSentenceModel.final_sentiment == "negatif")
-        stmt_neu = select(func.count(ArticleSentenceModel.id)).where(ArticleSentenceModel.final_sentiment == "netral")
+        # Get sentiments stats
+        normalized_sentiment = func.lower(func.trim(func.coalesce(ArticleSentenceModel.final_sentiment, ArticleSentenceModel.sentiment, "")))
+        stmt_pos = select(func.count(ArticleSentenceModel.id)).where(normalized_sentiment == "positif")
+        stmt_neg = select(func.count(ArticleSentenceModel.id)).where(normalized_sentiment == "negatif")
+        stmt_neu = select(func.count(ArticleSentenceModel.id)).where(normalized_sentiment == "netral")
         
         total_pos = await db.scalar(stmt_pos) or 0
         total_neg = await db.scalar(stmt_neg) or 0
         total_neu = await db.scalar(stmt_neu) or 0
+
+        # Get top sources
+        stmt_sources = select(ArticleModel.source_origin, func.count(ArticleModel.id)).group_by(ArticleModel.source_origin).order_by(func.count(ArticleModel.id).desc()).limit(5)
+        sources_result = await db.execute(stmt_sources)
+        top_sources = [f"{r[0] or 'Tidak diketahui'}: {r[1]} artikel" for r in sources_result.all()]
+        top_sources_str = "\n".join([f"- {s}" for s in top_sources])
 
         # Get recent 5 articles
         stmt_recent = select(ArticleModel.title).order_by(ArticleModel.date.desc()).limit(5)
@@ -43,12 +51,14 @@ async def get_rag_context(db: AsyncSession) -> str:
         recent_titles_str = "\n".join([f"- {t}" for t in recent_titles])
 
         context = (
-            f"Statistik Database Proyek Analisis Sentimen Berita:\n"
-            f"- Total Artikel: {total_articles}\n"
-            f"- Sentimen Positif: {total_pos} kalimat\n"
-            f"- Sentimen Negatif: {total_neg} kalimat\n"
-            f"- Sentimen Netral: {total_neu} kalimat\n\n"
-            f"5 Berita Terbaru:\n{recent_titles_str}"
+            f"Statistik Keseluruhan Database Proyek Analisis Sentimen Berita:\n"
+            f"- Total Artikel Berita: {total_articles}\n"
+            f"- Total Kalimat Terekstrak: {total_sentences}\n"
+            f"- Kalimat Bersentimen Positif: {total_pos}\n"
+            f"- Kalimat Bersentimen Negatif: {total_neg}\n"
+            f"- Kalimat Bersentimen Netral: {total_neu}\n\n"
+            f"5 Sumber Berita Terbanyak:\n{top_sources_str}\n\n"
+            f"5 Judul Berita Terbaru:\n{recent_titles_str}"
         )
         return context
     except Exception as e:
@@ -69,14 +79,14 @@ async def chat_stream(
             context = await get_rag_context(db)
         
         system_prompt = (
-            "Anda adalah AI Analis Data eksklusif untuk 'DailyVerse Sentiment API'. "
+            "Anda adalah AI Analis Data EKSKLUSIF untuk 'DailyVerse Sentiment API'. "
             "Proyek ini adalah sebuah proyek Skripsi Analisis Sentimen yang dikembangkan oleh mahasiswa bernama Mochamad Ryan Hanafi (email: mochamadryanhanafi@gmail.com).\n\n"
-            "TUGAS UTAMA ANDA:\n"
-            "1. Jawab pertanyaan pengguna SECARA KETAT dan HANYA berdasarkan data statistik yang diberikan di bawah ini.\n"
-            "2. JANGAN PERNAH membuat-buat (halusinasi) percakapan palsu, berita palsu, atau data yang tidak ada di Konteks Data.\n"
-            "3. Jika pengguna bertanya di luar konteks proyek analisis sentimen atau data di bawah ini, tolak dengan sopan dan ingatkan bahwa Anda hanya asisten untuk proyek skripsi ini.\n"
-            "4. Berbicaralah dengan ramah, profesional, dan dalam bahasa Indonesia yang baik.\n\n"
-            f"=== KONTEKS DATA DATABASE SAAT INI ===\n{context}\n==================\n"
+            "TUGAS DAN ATURAN MUTLAK ANDA (HARUS DIPATUHI):\n"
+            "1. JANGAN PERNAH menjawab pertanyaan umum, definisi kamus, resep masakan, pemrograman, cuaca, atau topik apa pun di luar analisis sentimen berita proyek ini!\n"
+            "2. Jika pengguna bertanya sesuatu seperti 'Apa itu banjir?', 'Siapa presiden?', Anda WAJIB MENOLAK dan berkata: 'Maaf, saya hanya Asisten AI untuk Proyek Skripsi Analisis Sentimen Mochamad Ryan Hanafi. Saya tidak dapat menjawab pertanyaan di luar konteks data analisis kita.'\n"
+            "3. Anda HANYA BOLEH menjawab berdasarkan data statistik di bawah ini.\n"
+            "4. Berbicaralah dengan bahasa Indonesia yang sangat profesional dan tegas menjaga batasan proyek ini.\n\n"
+            f"=== DATA ANALISIS KESELURUHAN (DATABASE) ===\n{context}\n===========================================\n"
         )
 
         ollama_payload = {
