@@ -241,7 +241,7 @@ export const api = {
   // Chatbot Endpoints
   // ----------------------------------------
   chatbot: {
-    chatStream: (message) => {
+    chatStream: (messages) => {
       const abortController = new AbortController();
       const mockEventSource = {
         onmessage: null,
@@ -255,7 +255,7 @@ export const api = {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem("access_token")}`
         },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ messages }),
         signal: abortController.signal
       }).then(async (response) => {
         if (!response.ok) throw new Error("Failed to connect to chat stream");

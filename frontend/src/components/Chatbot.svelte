@@ -20,7 +20,7 @@
     isOpen = !isOpen;
     if (isOpen && chatHistory.length === 0) {
       chatHistory = [
-        { role: 'ai', content: 'Halo! Saya Asisten AI Analis untuk proyek DailyVerse Sentiment. Ada yang ingin Anda ketahui tentang statistik atau data terbaru kita?' }
+        { role: 'ai', content: 'Halo! Saya NanaAI, asisten analis untuk proyek DailyVerse Sentiment. Ada yang ingin Anda ketahui tentang statistik atau data terbaru kita?' }
       ];
     }
     scrollToBottom();
@@ -37,10 +37,12 @@
 
     // Add empty AI message to be streamed into
     chatHistory = [...chatHistory, { role: 'ai', content: '' }];
-    
     try {
-      const eventSource = api.chatbot.chatStream(userMessage);
-      
+      const messagesToSend = chatHistory.slice(0, -1).map(msg => ({
+        role: msg.role === 'ai' ? 'assistant' : 'user',
+        content: msg.content
+      }));
+      const eventSource = api.chatbot.chatStream(messagesToSend);
       eventSource.onmessage = (e) => {
         const data = JSON.parse(e.data);
         if (data.event === 'chunk') {
