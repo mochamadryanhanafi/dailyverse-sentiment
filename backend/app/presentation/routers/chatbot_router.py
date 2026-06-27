@@ -69,24 +69,31 @@ async def chat_stream(
             context = await get_rag_context(db)
         
         system_prompt = (
-            "Anda adalah AI Analis Data untuk proyek DailyVerse Sentiment API berbahasa Indonesia. "
-            "Tugas Anda adalah menjawab pertanyaan pengguna berdasarkan data statistik yang diberikan. "
-            "Berbicaralah dengan ramah, profesional, dan dalam bahasa Indonesia yang baik.\n\n"
-            f"=== KONTEKS DATA ===\n{context}\n==================\n"
+            "Anda adalah AI Analis Data eksklusif untuk 'DailyVerse Sentiment API'. "
+            "Proyek ini adalah sebuah proyek Skripsi Analisis Sentimen yang dikembangkan oleh mahasiswa bernama Mochamad Ryan Hanafi (email: mochamadryanhanafi@gmail.com).\n\n"
+            "TUGAS UTAMA ANDA:\n"
+            "1. Jawab pertanyaan pengguna SECARA KETAT dan HANYA berdasarkan data statistik yang diberikan di bawah ini.\n"
+            "2. JANGAN PERNAH membuat-buat (halusinasi) percakapan palsu, berita palsu, atau data yang tidak ada di Konteks Data.\n"
+            "3. Jika pengguna bertanya di luar konteks proyek analisis sentimen atau data di bawah ini, tolak dengan sopan dan ingatkan bahwa Anda hanya asisten untuk proyek skripsi ini.\n"
+            "4. Berbicaralah dengan ramah, profesional, dan dalam bahasa Indonesia yang baik.\n\n"
+            f"=== KONTEKS DATA DATABASE SAAT INI ===\n{context}\n==================\n"
         )
 
         ollama_payload = {
             "model": OLLAMA_MODEL,
-            "prompt": f"{system_prompt}\nPengguna: {message}\nAI Analis:",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ],
             "stream": True,
             "options": {
-                "temperature": 0.7
+                "temperature": 0.3
             }
         }
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                url = f"{OLLAMA_URL.rstrip('/')}/api/generate"
+                url = f"{OLLAMA_URL.rstrip('/')}/api/chat"
                 async with client.stream("POST", url, json=ollama_payload) as response:
                     
                     if response.status_code != 200:
@@ -103,7 +110,8 @@ async def chat_stream(
                                 yield _sse("done", {"detail": "Selesai"})
                                 break
                             
-                            chunk = data.get("response", "")
+                            msg_obj = data.get("message", {})
+                            chunk = msg_obj.get("content", "")
                             if chunk:
                                 yield _sse("chunk", {"text": chunk})
                                 
