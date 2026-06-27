@@ -37,7 +37,7 @@ async def get_rag_context(db: AsyncSession) -> str:
         total_neu = await db.scalar(stmt_neu) or 0
 
         # Get recent 5 articles
-        stmt_recent = select(ArticleModel.title).order_by(ArticleModel.published_at.desc()).limit(5)
+        stmt_recent = select(ArticleModel.title).order_by(ArticleModel.date.desc()).limit(5)
         recent_result = await db.execute(stmt_recent)
         recent_titles = [r[0] for r in recent_result.all()]
         recent_titles_str = "\n".join([f"- {t}" for t in recent_titles])
