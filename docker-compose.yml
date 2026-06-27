@@ -36,8 +36,8 @@ services:
       SCRAPER_START_YEAR: ${SCRAPER_START_YEAR:-2015}
       SCRAPER_END_YEAR: ${SCRAPER_END_YEAR:-2024}
       SCRAPER_TOTAL_TARGET: ${SCRAPER_TOTAL_TARGET:-600}
-      GROQ_API_KEY: ${GROQ_API_KEY}
-      GROQ_MODEL: ${GROQ_MODEL:-llama3-8b-8192}
+      OLLAMA_URL: ${OLLAMA_URL:-http://172.17.0.1:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-dolphin-llama3:8b}
     ports:
       - "8003:8000"
     volumes:
