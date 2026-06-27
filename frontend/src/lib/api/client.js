@@ -277,12 +277,17 @@ export const api = {
             if (line.startsWith('data: ')) {
               const dataStr = line.substring(6);
               if (mockEventSource.onmessage) {
-                mockEventSource.onmessage({ data: dataStr });
+                try {
+                  mockEventSource.onmessage({ data: dataStr });
+                } catch (parseErr) {
+                  console.error("Error processing SSE message:", parseErr, "Raw data:", dataStr);
+                }
               }
             }
           }
         }
       }).catch(err => {
+        console.error("Stream connection error:", err);
         if (err.name !== 'AbortError' && mockEventSource.onerror) {
           mockEventSource.onerror(err);
         }

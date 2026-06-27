@@ -116,4 +116,9 @@ async def chat_stream(
             logger.error(f"Ollama stream error: {e}")
             yield _sse("error", {"detail": f"Terjadi kesalahan saat menghubungi Ollama: {str(e)}"})
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)

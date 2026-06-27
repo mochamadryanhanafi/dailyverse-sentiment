@@ -57,8 +57,9 @@
         }
       };
 
-      eventSource.onerror = () => {
-        chatHistory[chatHistory.length - 1].content += "\n\n[Koneksi terputus dari server AI]";
+      eventSource.onerror = (err) => {
+        const errorMsg = err && err.message ? err.message : "Tidak diketahui";
+        chatHistory[chatHistory.length - 1].content += `\n\n[Koneksi terputus dari server AI: ${errorMsg}]`;
         isThinking = false;
         eventSource.close();
         scrollToBottom();
