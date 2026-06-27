@@ -1,0 +1,304 @@
+<script>
+  export let totalArticles;
+  export let loadArticles;
+  export let articlesLoading;
+  export let api;
+  export let handleSyncSentiment;
+  export let syncLoading;
+  export let filterSource;
+  export let filterSentiment;
+  export let filterStartDate;
+  export let filterEndDate;
+  export let sortOrder;
+  export let articlesOffset;
+  export let articlesLimit;
+  export let articlesError;
+  export let articles;
+  export let navigate;
+  export let getSourceStyle;
+</script>
+
+<div class="space-y-6 animate-fade-in max-w-5xl mx-auto">
+  <div class="glass-card p-4 px-6 flex flex-col gap-4">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <p class="font-bold text-slate-700 dark:text-slate-200">
+        <span class="text-brand-600 dark:text-brand-400 text-lg"
+          >{totalArticles.toLocaleString("id-ID")}</span
+        > artikel tersimpan
+      </p>
+      <button
+        class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
+        on:click={loadArticles}
+        disabled={articlesLoading}
+      >
+        {#if articlesLoading}
+          <svg
+            class="w-4 h-4 animate-spin"
+            viewBox="0 0 24 24"
+            fill="none"
+            ><circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            /><path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8v8H4z"
+            /></svg
+          >
+        {:else}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="w-4 h-4"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            ><path
+              fill-rule="evenodd"
+              d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
+              clip-rule="evenodd"
+            /></svg
+          >
+        {/if}
+        Refresh
+      </button>
+
+      <a
+        href={api.scraper.exportArticlesUrl()}
+        target="_blank"
+        class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+        title="Unduh artikel dengan kolom sentimen dikosongkan"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+        </svg>
+        Unduh CSV Artikel
+      </a>
+
+      <button
+        class="btn-primary shadow-sm bg-brand-500 hover:bg-brand-600 text-white flex items-center gap-2"
+        on:click={handleSyncSentiment}
+        disabled={syncLoading}
+        title="Cocokkan artikel dengan sentimen kalimat yang sudah dianotasi"
+      >
+        {#if syncLoading}
+          <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
+        {:else}
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+        {/if}
+        Sinkronisasi Sentimen
+      </button>
+    </div>
+
+    <div
+      class="flex flex-wrap items-center gap-3 pt-4 border-t border-slate-200/50 dark:border-slate-700/50"
+    >
+      <select
+        bind:value={filterSource}
+        on:change={loadArticles}
+        class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
+      >
+        <option value="">Semua Sumber</option>
+        <option value="detik">Detik</option>
+        <option value="kompas">Kompas</option>
+        <option value="liputan6">Liputan6</option>
+        <option value="republika">Republika</option>
+        <option value="suara">Suara</option>
+        <option value="tempo">Tempo</option>
+      </select>
+      <select
+        bind:value={filterSentiment}
+        on:change={loadArticles}
+        class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
+      >
+        <option value="">Semua Sentimen</option>
+        <option value="Positif">Positif</option>
+        <option value="Negatif">Negatif</option>
+        <option value="Netral">Netral</option>
+        <option value="Belum Dianotasi">Belum Dianotasi</option>
+      </select>
+
+      <div class="flex items-center gap-2 w-full sm:w-auto">
+        <input
+          type="date"
+          bind:value={filterStartDate}
+          on:change={loadArticles}
+          class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 flex-1"
+          title="Tanggal Mulai"
+        />
+        <span class="text-slate-400 text-sm">-</span>
+        <input
+          type="date"
+          bind:value={filterEndDate}
+          on:change={loadArticles}
+          class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 flex-1"
+          title="Tanggal Akhir"
+        />
+      </div>
+      <select
+        bind:value={sortOrder}
+        on:change={loadArticles}
+        class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
+      >
+        <option value="asc">Terlama Dulu</option>
+        <option value="desc">Terbaru Dulu</option>
+      </select>
+      <button
+        class="btn-primary py-1.5 px-4 text-sm shadow-sm w-full sm:w-auto"
+        on:click={() => {
+          articlesOffset = 0;
+          loadArticles();
+        }}
+      >
+        Filter
+      </button>
+    </div>
+  </div>
+
+  {#if articlesError}
+    <div
+      class="glass-card p-4 border border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-900/20"
+    >
+      <p class="text-sm font-semibold text-red-600 dark:text-red-400">
+        {articlesError}
+      </p>
+    </div>
+  {:else if articlesLoading && articles.length === 0}
+    <div class="glass-card p-16 flex flex-col items-center gap-4">
+      <svg
+        class="w-10 h-10 animate-spin text-brand-500"
+        viewBox="0 0 24 24"
+        fill="none"
+        ><circle
+          class="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          stroke-width="4"
+        /><path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8v8H4z"
+        /></svg
+      >
+      <p class="text-sm font-medium text-slate-500">
+        Memuat artikel dari database…
+      </p>
+    </div>
+  {:else if articles.length === 0}
+    <div
+      class="glass-card p-16 flex flex-col items-center gap-4 text-center"
+    >
+      <p class="text-xl font-bold text-slate-700 dark:text-slate-200">
+        Belum ada artikel
+      </p>
+      <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md">
+        Database masih kosong. Anda dapat mengunggah dataset melalui menu Ingesti Data.
+      </p>
+      <button
+        class="btn-primary mt-4 shadow-lg"
+        on:click={() => navigate("ingestion")}>Buka Ingesti Data →</button
+      >
+    </div>
+  {:else}
+    <div class="space-y-4">
+      {#each articles as article (article.id)}
+        {@const sinfo = getSourceStyle(article.url, article.source)}
+        <div
+          class="glass-card p-5 sm:p-6 hover:-translate-y-1 hover:shadow-2xl transition-all duration-300 group"
+        >
+          <div class="flex flex-col sm:flex-row gap-4">
+            <div class="flex-1 min-w-0">
+              <a
+                href={article.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-lg font-bold text-slate-900 dark:text-white group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2"
+              >
+                {article.title}
+              </a>
+              <p
+                class="text-sm text-slate-500 dark:text-slate-400 mt-2 line-clamp-3 leading-relaxed"
+              >
+                {article.content}
+              </p>
+            </div>
+            <div
+              class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 shrink-0 border-t sm:border-t-0 sm:border-l border-slate-200/50 dark:border-slate-700/50 pt-3 sm:pt-0 sm:pl-4 mt-3 sm:mt-0"
+            >
+              <span
+                class="text-xs font-bold tracking-wider bg-brand-100 dark:bg-brand-900/50 text-brand-700 dark:text-brand-300 px-2.5 py-1 rounded-lg"
+              >
+                {new Date(article.date).toLocaleDateString("id-ID", {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })}
+              </span>
+              <a
+                href={article.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border shadow-sm transition-all hover:scale-105 flex items-center gap-1 {sinfo.colors}"
+              >
+                Source ↗
+              </a>
+            </div>
+            {#if article.sentiment}
+              <div class="mt-3 sm:mt-0 sm:ml-4 flex items-center">
+                <span
+                  class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full shadow-sm
+                {article.sentiment.toLowerCase() === 'positif'
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                    : article.sentiment.toLowerCase() === 'negatif'
+                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                      : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}"
+                >
+                  {article.sentiment}
+                </span>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/each}
+    </div>
+
+    <div
+      class="glass-card p-3 px-5 flex items-center justify-between mt-6"
+    >
+      <p
+        class="text-sm font-semibold text-slate-500 dark:text-slate-400"
+      >
+        Hal. {Math.floor(articlesOffset / articlesLimit) + 1} &mdash;
+        <span class="font-normal"
+          >{articlesOffset + 1}–{Math.min(
+            articlesOffset + articlesLimit,
+            totalArticles,
+          )} dari {totalArticles.toLocaleString("id-ID")}</span
+        >
+      </p>
+      <div class="flex gap-2">
+        <button
+          class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
+          on:click={() => {
+            articlesOffset -= articlesLimit;
+            loadArticles();
+          }}
+          disabled={articlesOffset === 0}>← Prev</button
+        >
+        <button
+          class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
+          on:click={() => {
+            articlesOffset += articlesLimit;
+            loadArticles();
+          }}
+          disabled={articlesOffset + articlesLimit >= totalArticles}
+          >Next →</button
+        >
+      </div>
+    </div>
+  {/if}
+</div>

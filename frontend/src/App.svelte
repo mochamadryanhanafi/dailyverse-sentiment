@@ -8,6 +8,8 @@
   import BarChart from "./lib/components/BarChart.svelte";
   import LineChart from "./lib/components/LineChart.svelte";
   import Chatbot from "./components/Chatbot.svelte";
+  import DashboardView from "./components/views/DashboardView.svelte";
+  import ArticleListView from "./components/views/ArticleListView.svelte";
 
   // Auth State
   let isLoggedIn = false;
@@ -1081,500 +1083,45 @@
           </div>
         {/if}
         {#if activeTab === "dashboard"}
-          <div class="space-y-6 animate-fade-in max-w-7xl mx-auto">
-            <section class="glass-card p-5 sm:p-7">
-              <div class="flex flex-col lg:flex-row lg:items-start justify-between gap-6">
-                <div class="max-w-3xl">
-                  <p class="text-xs font-bold uppercase tracking-widest text-brand-600 dark:text-brand-400">
-                    Economic Sentiment Analytics
-                  </p>
-                  <h2 class="mt-2 text-2xl sm:text-3xl font-black text-slate-950 dark:text-white leading-tight">
-                    Ringkasan Analisis Sentimen Berita Ekonomi
-                  </h2>
-                  <p class="mt-3 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                    Pantau cakupan data artikel, proses anotasi, ekstraksi kalimat, dan performa model dalam satu layar.
-                  </p>
-                </div>
-
-                <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-3 min-w-0 lg:min-w-[22rem]">
-                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
-                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Coverage</p>
-                    <p class="mt-1 text-2xl font-black text-emerald-600 dark:text-emerald-400">{annotationCoverage}%</p>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">artikel dianotasi</p>
-                  </div>
-                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
-                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Validasi</p>
-                    <p class="mt-1 text-2xl font-black text-blue-600 dark:text-blue-400">{sentenceValidationRate}%</p>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">kalimat ground truth</p>
-                  </div>
-                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
-                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Sumber Utama</p>
-                    <p class="mt-1 text-lg font-black text-slate-900 dark:text-white truncate">{topSource ? getSourceStyle('', topSource.source).name : '-'}</p>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">{topSource ? topSource.count.toLocaleString('id-ID') : 0} artikel</p>
-                  </div>
-                  <div class="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3">
-                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Sentimen Dominan</p>
-                    <p class="mt-1 text-lg font-black text-slate-900 dark:text-white truncate">{dominantSentiment ? dominantSentiment.sentiment : '-'}</p>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">{dominantSentiment ? dominantSentiment.count.toLocaleString('id-ID') : 0} artikel</p>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <div class="grid grid-cols-2 xl:grid-cols-4 gap-4">
-              <StatCard
-                label="Total Artikel"
-                value={totalArticles}
-                gradient="from-brand-500 to-indigo-600"
-                sublabel="tersimpan di database"
-              />
-              <StatCard
-                label="Artikel Dianotasi"
-                value={annotatedArticlesCount}
-                gradient="from-emerald-500 to-teal-500"
-                sublabel="memiliki label sentimen"
-              />
-              <StatCard
-                label="Total Kalimat"
-                value={sentenceStats.total}
-                gradient="from-blue-500 to-cyan-500"
-                sublabel="tersimpan untuk analisis"
-              />
-              <StatCard
-                label="Kalimat Tervalidasi"
-                value={sentenceStats.validated}
-                gradient="from-violet-500 to-fuchsia-600"
-                sublabel="ground truth ahli"
-              />
-            </div>
-
-            <div class="grid grid-cols-1 gap-5">
-              <LineChart
-                series={sentimentSeries}
-                emptyYears={sentimentChartYears}
-                title="Tren Artikel Berdasarkan Sentimen"
-                height={320}
-                labelKey="year"
-                valueKey="count"
-              />
-              <LineChart
-                series={sourceSeries}
-                emptyYears={sourceChartYears}
-                title="Tren Artikel Berdasarkan Portal"
-                height={320}
-                labelKey="year"
-                valueKey="count"
-              />
-            </div>
-
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
-                <div>
-                  <h3 class="font-bold text-slate-900 dark:text-white">Distribusi Sentimen</h3>
-                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Proporsi label artikel dalam dataset.</p>
-                </div>
-                {#if sentimentStats && sentimentStats.length > 0}
-                  <div class="space-y-4">
-                    {#each sentimentStats as stat}
-                      {@const sentimentName = stat.sentiment === "None" || !stat.sentiment ? "Belum Dianotasi" : stat.sentiment}
-                      {@const sentimentPct = totalArticles > 0 ? Math.max((stat.count / totalArticles) * 100, 1) : 0}
-                      <div>
-                        <div class="flex justify-between items-end mb-1">
-                          <span class="text-sm font-semibold capitalize text-slate-700 dark:text-slate-300">{sentimentName}</span>
-                          <span class="text-xs font-bold text-slate-500">{stat.count.toLocaleString("id-ID")}</span>
-                        </div>
-                        <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden">
-                          <div
-                            class="h-2.5 rounded-full {stat.sentiment?.toLowerCase() === 'positif'
-                              ? 'bg-emerald-500'
-                              : stat.sentiment?.toLowerCase() === 'negatif'
-                                ? 'bg-red-500'
-                                : stat.sentiment?.toLowerCase() === 'netral'
-                                  ? 'bg-blue-500'
-                                  : 'bg-slate-400'}"
-                            style="width: {sentimentPct}%"
-                          ></div>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">Belum ada data sentimen.</p>
-                {/if}
-              </section>
-
-              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
-                <div>
-                  <h3 class="font-bold text-slate-900 dark:text-white">Portal Berita</h3>
-                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Sumber artikel yang masuk database.</p>
-                </div>
-                {#if sourceStats && sourceStats.length > 0}
-                  <div class="space-y-4">
-                    {#each sourceStats as stat}
-                      {@const sinfo = getSourceStyle('', stat.source)}
-                      {@const sourcePct = totalArticles > 0 ? Math.max((stat.count / totalArticles) * 100, 1) : 0}
-                      <div>
-                        <div class="flex justify-between items-center mb-2">
-                          <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border shadow-sm {sinfo.colors}">
-                            {sinfo.name}
-                          </span>
-                          <span class="text-xs font-bold text-slate-500">{stat.count.toLocaleString("id-ID")}</span>
-                        </div>
-                        <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 shadow-inner overflow-hidden">
-                          <div class="bg-brand-500 h-2.5 rounded-full" style="width: {sourcePct}%"></div>
-                        </div>
-                      </div>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="text-sm text-slate-500 dark:text-slate-400 italic">Belum ada data sumber berita.</p>
-                {/if}
-              </section>
-
-              <section class="glass-card p-5 sm:p-6 flex flex-col gap-4">
-                {#if evalMetrics}
-                  {@const dashboardWrongSentences = evalMismatches.slice(0, 3)}
-                  <div class="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 class="font-bold text-slate-900 dark:text-white">Evaluasi Model</h3>
-                      <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Hasil terhadap data validasi ahli.</p>
-                    </div>
-                    <button class="btn-ghost border border-slate-200 dark:border-slate-800 px-3 py-1.5" on:click={() => navigate('evaluasi')}>
-                      Detail
-                    </button>
-                  </div>
-                  <div class="grid grid-cols-2 gap-3">
-                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Accuracy</p>
-                      <p class="mt-1 text-2xl font-black text-brand-600 dark:text-brand-400">{(evalMetrics.accuracy * 100).toFixed(2)}%</p>
-                    </div>
-                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">F1-Score</p>
-                      <p class="mt-1 text-2xl font-black text-indigo-600 dark:text-indigo-400">{(evalMetrics.macro_avg.f1 * 100).toFixed(2)}%</p>
-                    </div>
-                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Benar</p>
-                      <p class="mt-1 text-2xl font-black text-emerald-600 dark:text-emerald-400">{evalMetrics.correct.toLocaleString('id-ID')}</p>
-                    </div>
-                    <div class="rounded-lg border border-slate-200 dark:border-slate-800 p-3">
-                      <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Salah</p>
-                      <p class="mt-1 text-2xl font-black text-red-600 dark:text-red-400">{evalMetrics.incorrect.toLocaleString('id-ID')}</p>
-                    </div>
-                  </div>
-                  {#if dashboardWrongSentences.length > 0}
-                    <div class="space-y-2">
-                      <p class="text-xs font-bold uppercase tracking-widest text-slate-400">Contoh Salah Prediksi</p>
-                      {#each dashboardWrongSentences as item}
-                        <div class="rounded-lg border border-slate-200 dark:border-slate-800 px-3 py-2">
-                          <p class="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">{item.text}</p>
-                          <p class="mt-1 text-[11px] text-slate-400">
-                            Ahli: <span class="font-semibold">{item.true}</span> · Model: <span class="font-semibold">{item.pred}</span>
-                          </p>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                {:else}
-                  <div>
-                    <h3 class="font-bold text-slate-900 dark:text-white">Evaluasi Model</h3>
-                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">
-                      Belum ada hasil evaluasi yang ditampilkan. Jalankan evaluasi untuk melihat accuracy, precision, recall, dan F1-score.
-                    </p>
-                  </div>
-                  <button class="btn-primary justify-center" on:click={() => navigate('evaluasi')}>
-                    Jalankan Evaluasi
-                  </button>
-                {/if}
-              </section>
-            </div>
-          </div>
+          <DashboardView
+            {annotationCoverage}
+            {sentenceValidationRate}
+            {topSource}
+            {dominantSentiment}
+            {totalArticles}
+            {annotatedArticlesCount}
+            {sentenceStats}
+            {sentimentSeries}
+            {sentimentChartYears}
+            {sourceSeries}
+            {sourceChartYears}
+            {sentimentStats}
+            {sourceStats}
+            {evalMetrics}
+            {evalMismatches}
+            {getSourceStyle}
+            {navigate}
+          />
         {:else if activeTab === "articles"}
-          <div class="space-y-6 animate-fade-in max-w-5xl mx-auto">
-            <div class="glass-card p-4 px-6 flex flex-col gap-4">
-              <div class="flex flex-wrap items-center justify-between gap-4">
-                <p class="font-bold text-slate-700 dark:text-slate-200">
-                  <span class="text-brand-600 dark:text-brand-400 text-lg"
-                    >{totalArticles.toLocaleString("id-ID")}</span
-                  > artikel tersimpan
-                </p>
-                <button
-                  class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
-                  on:click={loadArticles}
-                  disabled={articlesLoading}
-                >
-                  {#if articlesLoading}
-                    <svg
-                      class="w-4 h-4 animate-spin"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      ><circle
-                        class="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        stroke-width="4"
-                      /><path
-                        class="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8v8H4z"
-                      /></svg
-                    >
-                  {:else}
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="w-4 h-4"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                      ><path
-                        fill-rule="evenodd"
-                        d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
-                        clip-rule="evenodd"
-                      /></svg
-                    >
-                  {/if}
-                  Refresh
-                </button>
-
-                <a
-                  href={api.scraper.exportArticlesUrl()}
-                  target="_blank"
-                  class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
-                  title="Unduh artikel dengan kolom sentimen dikosongkan"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
-                  </svg>
-                  Unduh CSV Artikel
-                </a>
-
-                <button
-                  class="btn-primary shadow-sm bg-brand-500 hover:bg-brand-600 text-white flex items-center gap-2"
-                  on:click={handleSyncSentiment}
-                  disabled={syncLoading}
-                  title="Cocokkan artikel dengan sentimen kalimat yang sudah dianotasi"
-                >
-                  {#if syncLoading}
-                    <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/></svg>
-                  {:else}
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
-                  {/if}
-                  Sinkronisasi Sentimen
-                </button>
-              </div>
-
-              <div
-                class="flex flex-wrap items-center gap-3 pt-4 border-t border-slate-200/50 dark:border-slate-700/50"
-              >
-                <select
-                  bind:value={filterSource}
-                  on:change={loadArticles}
-                  class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
-                >
-                  <option value="">Semua Sumber</option>
-                  <option value="detik">Detik</option>
-                  <option value="kompas">Kompas</option>
-                  <option value="liputan6">Liputan6</option>
-                  <option value="republika">Republika</option>
-                  <option value="suara">Suara</option>
-                  <option value="tempo">Tempo</option>
-                </select>
-                <select
-                  bind:value={filterSentiment}
-                  on:change={loadArticles}
-                  class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
-                >
-                  <option value="">Semua Sentimen</option>
-                  <option value="Positif">Positif</option>
-                  <option value="Negatif">Negatif</option>
-                  <option value="Netral">Netral</option>
-                  <option value="Belum Dianotasi">Belum Dianotasi</option>
-                </select>
-
-                <div class="flex items-center gap-2 w-full sm:w-auto">
-                  <input
-                    type="date"
-                    bind:value={filterStartDate}
-                    on:change={loadArticles}
-                    class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 flex-1"
-                    title="Tanggal Mulai"
-                  />
-                  <span class="text-slate-400 text-sm">-</span>
-                  <input
-                    type="date"
-                    bind:value={filterEndDate}
-                    on:change={loadArticles}
-                    class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 flex-1"
-                    title="Tanggal Akhir"
-                  />
-                </div>
-                <select
-                  bind:value={sortOrder}
-                  on:change={loadArticles}
-                  class="input-field py-1.5 px-3 text-sm shadow-sm bg-white/60 dark:bg-slate-800/60 w-full sm:w-auto"
-                >
-                  <option value="asc">Terlama Dulu</option>
-                  <option value="desc">Terbaru Dulu</option>
-                </select>
-                <button
-                  class="btn-primary py-1.5 px-4 text-sm shadow-sm w-full sm:w-auto"
-                  on:click={() => {
-                    articlesOffset = 0;
-                    loadArticles();
-                  }}
-                >
-                  Filter
-                </button>
-              </div>
-            </div>
-
-            {#if articlesError}
-              <div
-                class="glass-card p-4 border border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-900/20"
-              >
-                <p class="text-sm font-semibold text-red-600 dark:text-red-400">
-                  {articlesError}
-                </p>
-              </div>
-            {:else if articlesLoading && articles.length === 0}
-              <div class="glass-card p-16 flex flex-col items-center gap-4">
-                <svg
-                  class="w-10 h-10 animate-spin text-brand-500"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  ><circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  /><path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8v8H4z"
-                  /></svg
-                >
-                <p class="text-sm font-medium text-slate-500">
-                  Memuat artikel dari database…
-                </p>
-              </div>
-            {:else if articles.length === 0}
-              <div
-                class="glass-card p-16 flex flex-col items-center gap-4 text-center"
-              >
-                <p class="text-xl font-bold text-slate-700 dark:text-slate-200">
-                  Belum ada artikel
-                </p>
-                <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md">
-                  Database masih kosong. Anda dapat mengunggah dataset melalui menu Ingesti Data.
-                </p>
-                <button
-                  class="btn-primary mt-4 shadow-lg"
-                  on:click={() => navigate("ingestion")}>Buka Ingesti Data →</button
-                >
-              </div>
-            {:else}
-              <div class="space-y-4">
-                {#each articles as article (article.id)}
-                  {@const sinfo = getSourceStyle(article.url, article.source)}
-                  <div
-                    class="glass-card p-5 sm:p-6 hover:-translate-y-1 hover:shadow-2xl transition-all duration-300 group"
-                  >
-                    <div class="flex flex-col sm:flex-row gap-4">
-                      <div class="flex-1 min-w-0">
-                        <a
-                          href={article.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-lg font-bold text-slate-900 dark:text-white group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2"
-                        >
-                          {article.title}
-                        </a>
-                        <p
-                          class="text-sm text-slate-500 dark:text-slate-400 mt-2 line-clamp-3 leading-relaxed"
-                        >
-                          {article.content}
-                        </p>
-                      </div>
-                      <div
-                        class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 shrink-0 border-t sm:border-t-0 sm:border-l border-slate-200/50 dark:border-slate-700/50 pt-3 sm:pt-0 sm:pl-4 mt-3 sm:mt-0"
-                      >
-                        <span
-                          class="text-xs font-bold tracking-wider bg-brand-100 dark:bg-brand-900/50 text-brand-700 dark:text-brand-300 px-2.5 py-1 rounded-lg"
-                        >
-                          {new Date(article.date).toLocaleDateString("id-ID", {
-                            year: "numeric",
-                            month: "short",
-                            day: "numeric",
-                          })}
-                        </span>
-                        <a
-                          href={article.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md border shadow-sm transition-all hover:scale-105 flex items-center gap-1 {sinfo.colors}"
-                        >
-                          Source ↗
-                        </a>
-                      </div>
-                      {#if article.sentiment}
-                        <div class="mt-3 sm:mt-0 sm:ml-4 flex items-center">
-                          <span
-                            class="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full shadow-sm
-                          {article.sentiment.toLowerCase() === 'positif'
-                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                              : article.sentiment.toLowerCase() === 'negatif'
-                                ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                                : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}"
-                          >
-                            {article.sentiment}
-                          </span>
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-
-              <div
-                class="glass-card p-3 px-5 flex items-center justify-between mt-6"
-              >
-                <p
-                  class="text-sm font-semibold text-slate-500 dark:text-slate-400"
-                >
-                  Hal. {Math.floor(articlesOffset / articlesLimit) + 1} &mdash;
-                  <span class="font-normal"
-                    >{articlesOffset + 1}–{Math.min(
-                      articlesOffset + articlesLimit,
-                      totalArticles,
-                    )} dari {totalArticles.toLocaleString("id-ID")}</span
-                  >
-                </p>
-                <div class="flex gap-2">
-                  <button
-                    class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
-                    on:click={() => {
-                      articlesOffset -= articlesLimit;
-                      loadArticles();
-                    }}
-                    disabled={articlesOffset === 0}>← Prev</button
-                  >
-                  <button
-                    class="btn-ghost shadow-sm bg-white/50 dark:bg-slate-800/50"
-                    on:click={() => {
-                      articlesOffset += articlesLimit;
-                      loadArticles();
-                    }}
-                    disabled={articlesOffset + articlesLimit >= totalArticles}
-                    >Next →</button
-                  >
-                </div>
-              </div>
-            {/if}
-          </div>
-
-          <!-- SECTION: Prep Artikel -->
+          <ArticleListView
+            {totalArticles}
+            {loadArticles}
+            {articlesLoading}
+            {api}
+            {handleSyncSentiment}
+            {syncLoading}
+            bind:filterSource
+            bind:filterSentiment
+            bind:filterStartDate
+            bind:filterEndDate
+            bind:sortOrder
+            bind:articlesOffset
+            {articlesLimit}
+            {articlesError}
+            {articles}
+            {navigate}
+            {getSourceStyle}
+          />
         {:else if activeTab === "prep_articles"}
           <div class="space-y-6 animate-fade-in max-w-4xl mx-auto">
             <div class="glass-card p-6 sm:p-8 space-y-6">
