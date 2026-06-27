@@ -14,8 +14,8 @@ from app.infrastructure.repositories.article_model import ArticleModel, ArticleS
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://172.17.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "dolphin-llama3:8b")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
 
 
 def _sse(event: str, data: dict) -> str:
@@ -61,9 +61,13 @@ async def chat_stream(
     message: str = Body(..., embed=True)
 ):
     """
-    Streaming chat response using Ollama API.
+    Streaming chat response using Groq API.
     """
     async def generate() -> AsyncGenerator[str, None]:
+        if not GROQ_API_KEY:
+            yield _sse("error", {"detail": "GROQ_API_KEY tidak ditemukan di environment variables."})
+            return
+
         # Fetch Context from Database in an isolated session
         async with AsyncSessionLocal() as db:
             context = await get_rag_context(db)
@@ -75,46 +79,58 @@ async def chat_stream(
             f"=== KONTEKS DATA ===\n{context}\n==================\n"
         )
 
-        ollama_payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": f"{system_prompt}\nPengguna: {message}\nAI Analis:",
+        groq_payload = {
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ],
             "stream": True,
-            "options": {
-                "temperature": 0.7
-            }
+            "temperature": 0.7
         }
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                url = f"{OLLAMA_URL.rstrip('/')}/api/generate"
-                async with client.stream("POST", url, json=ollama_payload) as response:
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                async with client.stream("POST", url, json=groq_payload, headers=headers) as response:
                     
                     if response.status_code != 200:
                         error_msg = await response.aread()
-                        yield _sse("error", {"detail": f"Ollama error {response.status_code}: {error_msg.decode()}"})
+                        yield _sse("error", {"detail": f"Groq error {response.status_code}: {error_msg.decode()}"})
                         return
 
                     async for line in response.aiter_lines():
-                        if not line:
+                        if not line or line.strip() == "":
                             continue
-                        try:
-                            data = json.loads(line)
-                            if data.get("done"):
+                        
+                        line = line.strip()
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            
+                            if data_str == "[DONE]":
                                 yield _sse("done", {"detail": "Selesai"})
                                 break
                             
-                            chunk = data.get("response", "")
-                            if chunk:
-                                yield _sse("chunk", {"text": chunk})
-                                
-                        except json.JSONDecodeError:
-                            continue
+                            try:
+                                data = json.loads(data_str)
+                                choices = data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    chunk = delta.get("content", "")
+                                    if chunk:
+                                        yield _sse("chunk", {"text": chunk})
+                            except json.JSONDecodeError:
+                                continue
                             
         except httpx.ConnectError:
-            yield _sse("error", {"detail": f"Gagal terhubung ke Ollama di {OLLAMA_URL}. Pastikan container Ollama menyala."})
+            yield _sse("error", {"detail": "Gagal terhubung ke API Groq. Periksa koneksi internet server."})
         except Exception as e:
-            logger.error(f"Ollama stream error: {e}")
-            yield _sse("error", {"detail": f"Terjadi kesalahan saat menghubungi Ollama: {str(e)}"})
+            logger.error(f"Groq stream error: {e}")
+            yield _sse("error", {"detail": f"Terjadi kesalahan saat menghubungi Groq: {str(e)}"})
 
     headers = {
         "X-Accel-Buffering": "no",
