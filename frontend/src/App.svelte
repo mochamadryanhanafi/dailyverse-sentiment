@@ -10,6 +10,7 @@
   import Chatbot from "./components/Chatbot.svelte";
   import DashboardView from "./components/views/DashboardView.svelte";
   import ArticleListView from "./components/views/ArticleListView.svelte";
+  import NotFoundView from "./components/views/NotFoundView.svelte";
 
   // Auth State
   let isLoggedIn = false;
@@ -263,6 +264,9 @@
 
 
   onMount(async () => {
+    window.addEventListener("hashchange", handleHashChange);
+    handleHashChange(); // initial load
+    
     // Cek token saat aplikasi dimuat
     const token = localStorage.getItem("token");
     if (token) {
@@ -391,7 +395,26 @@
     }
   }
 
-  function navigate(id) {
+  function handleHashChange() {
+    const hash = window.location.hash.replace("#/", "");
+    if (!hash) {
+      navigate("dashboard", true);
+      return;
+    }
+    const validTabs = navItems.map((n) => n.id);
+    if (validTabs.includes(hash)) {
+      if (activeTab !== hash) navigate(hash, true);
+    } else {
+      activeTab = "notfound";
+      sidebarOpen = false;
+    }
+  }
+
+  function navigate(id, fromHash = false) {
+    if (!fromHash) {
+      window.location.hash = "/" + id;
+      return;
+    }
     activeTab = id;
     sidebarOpen = false;
     if (activeTab === "articles") loadArticles();
@@ -2827,6 +2850,8 @@
               </div>
             {/if}
           </div>
+        {:else if activeTab === "notfound"}
+          <NotFoundView {navigate} />
         {/if}
 
         <!-- AI Assistant (Floating Chat Widget) -->
