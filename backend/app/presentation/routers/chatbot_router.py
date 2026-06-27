@@ -15,7 +15,7 @@ from app.infrastructure.repositories.article_sentence_model import ArticleSenten
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.17.0.1:11434")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://172.17.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "dolphin-llama3:8b")
 
 
@@ -87,7 +87,7 @@ async def chat_stream(
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                url = f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate"
+                url = f"{OLLAMA_URL.rstrip('/')}/api/generate"
                 async with client.stream("POST", url, json=ollama_payload) as response:
                     
                     if response.status_code != 200:
@@ -112,7 +112,7 @@ async def chat_stream(
                             continue
                             
         except httpx.ConnectError:
-            yield _sse("error", {"detail": f"Gagal terhubung ke Ollama di {OLLAMA_BASE_URL}. Pastikan container Ollama menyala."})
+            yield _sse("error", {"detail": f"Gagal terhubung ke Ollama di {OLLAMA_URL}. Pastikan container Ollama menyala."})
         except Exception as e:
             logger.error(f"Ollama stream error: {e}")
             yield _sse("error", {"detail": f"Terjadi kesalahan saat menghubungi Ollama: {str(e)}"})
