@@ -9,8 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from collections.abc import AsyncGenerator
 
 from app.core.database import get_db, AsyncSessionLocal
-from app.infrastructure.repositories.article_model import ArticleModel
-from app.infrastructure.repositories.article_sentence_model import ArticleSentenceModel
+from app.infrastructure.repositories.article_model import ArticleModel, ArticleSentenceModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chatbot", tags=["chatbot"])
