@@ -1,6 +1,6 @@
 <script>
   import { onMount, tick } from "svelte";
-  import api from "../lib/api/client.js";
+  import { api } from "../lib/api/client.js";
 
   let isOpen = false;
   let isThinking = false;
