@@ -7,6 +7,7 @@
   import StatCard from "./lib/components/StatCard.svelte";
   import BarChart from "./lib/components/BarChart.svelte";
   import LineChart from "./lib/components/LineChart.svelte";
+  import Chatbot from "./components/Chatbot.svelte";
 
   // Auth State
   let isLoggedIn = false;
@@ -3280,6 +3281,9 @@
             {/if}
           </div>
         {/if}
+
+        <!-- AI Assistant (Floating Chat Widget) -->
+        <Chatbot />
       </main>
     </div>
   </div>

@@ -236,4 +236,59 @@ export const api = {
       })
     }
   },
+
+  // ----------------------------------------
+  // Chatbot Endpoints
+  // ----------------------------------------
+  chatbot: {
+    chatStream: (message) => {
+      const abortController = new AbortController();
+      const mockEventSource = {
+        onmessage: null,
+        onerror: null,
+        close: () => abortController.abort()
+      };
+
+      fetch(`${BASE}/chatbot/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem("access_token")}`
+        },
+        body: JSON.stringify({ message }),
+        signal: abortController.signal
+      }).then(async (response) => {
+        if (!response.ok) throw new Error("Failed to connect to chat stream");
+        
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\\n');
+          buffer = lines.pop(); // keep the incomplete line in the buffer
+          
+          for (let line of lines) {
+            line = line.trim();
+            if (line.startsWith('data: ')) {
+              const dataStr = line.substring(6);
+              if (mockEventSource.onmessage) {
+                mockEventSource.onmessage({ data: dataStr });
+              }
+            }
+          }
+        }
+      }).catch(err => {
+        if (err.name !== 'AbortError' && mockEventSource.onerror) {
+          mockEventSource.onerror(err);
+        }
+      });
+
+      return mockEventSource;
+    }
+  }
 }

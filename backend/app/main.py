@@ -60,6 +60,13 @@ app.include_router(annotation_router)
 app.include_router(evaluation_router)
 app.include_router(training_router)
 
+# Safe inclusion of chatbot router
+try:
+    from app.presentation.routers.chatbot_router import router as chatbot_router
+    app.include_router(chatbot_router)
+except Exception as e:
+    import logging
+    logging.error(f"Failed to load chatbot_router: {e}")
 
 @app.get("/")
 async def root():
