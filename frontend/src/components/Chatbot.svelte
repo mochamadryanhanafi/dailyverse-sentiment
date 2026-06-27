@@ -101,7 +101,10 @@
     <div class="bg-brand-600 text-white p-4 flex justify-between items-center">
       <div class="flex items-center gap-2">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-        <h3 class="font-bold">Asisten AI (LLM 8B)</h3>
+        <div class="text-left">
+          <h3 class="font-bold">NanaAI</h3>
+          <p class="text-xs opacity-90">Tanya saya tentang data analisis ini!</p>
+        </div>
       </div>
     </div>
 
