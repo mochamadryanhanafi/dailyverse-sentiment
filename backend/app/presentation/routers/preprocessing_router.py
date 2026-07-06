@@ -242,7 +242,8 @@ def _validated_sentence_condition():
 
 def _validation_status_from_row(row: dict) -> str:
     return (
-        (row.get("Status_Data") or "").strip()
+        (row.get("Validation_Status") or "").strip()
+        or (row.get("Status_Data") or "").strip()
         or (row.get("Hasil_Validasi") or "").strip()
         or ("VALIDASI_OCR" if (row.get("Validasi_OCR") or "").strip() else "")
         or "TIDAK DIKETAHUI"
@@ -630,15 +631,24 @@ async def upload_annotated_csv(
     for row_index, row in enumerate(rows_data, start=1):
         source_id = (row.get("ID_Artikel") or "").strip().upper() or f"CSV-UNKNOWN-{row_index:06d}"
         sentence = (row.get("Kalimat_Asli") or "").strip()
-        initial_sentiment = _normalize_sentiment_label(row.get("Sentimen_Sebelum_Validasi"))
+        initial_sentiment = (
+            _normalize_sentiment_label(row.get("Sentimen_Sebelum_Validasi"))
+            or _normalize_sentiment_label(row.get("Sentimen_Awal"))
+        )
         final_sentiment = (
-            _normalize_sentiment_label(row.get("Sentimen_Final"))
+            _normalize_sentiment_label(row.get("Label_Validasi_Ahli"))
+            or _normalize_sentiment_label(row.get("Sentimen_Final"))
             or _normalize_sentiment_label(row.get("Label_Final"))
+            or _normalize_sentiment_label(row.get("Sentimen_Akhir"))
+            or _normalize_sentiment_label(row.get("Label_Sentimen"))
+            or _normalize_sentiment_label(row.get("Hasil_Analisa_Sentimen"))
         )
         annotation_note = (
             (row.get("Status_Data") or "").strip()
             or (row.get("Hasil_Validasi") or "").strip()
             or (row.get("Validasi_OCR") or "").strip()
+            or (row.get("Status_Label") or "").strip()
+            or (row.get("Alasan_Singkat") or "").strip()
             or ""
         )
 
@@ -652,7 +662,9 @@ async def upload_annotated_csv(
         is_validated = (
             _is_validated_value(row.get("Status_Data"))
             or _is_validated_value(row.get("Hasil_Validasi"))
+            or _is_validated_value(row.get("Is_Validated"))
             or bool((row.get("Validasi_OCR") or "").strip())
+            or bool((row.get("Label_Validasi_Ahli") or "").strip())
         )
         validation_status = _validation_status_from_row(row)
         if is_validated:
