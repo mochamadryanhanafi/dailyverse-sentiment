@@ -1,6 +1,7 @@
 <script>
   import StatCard from '../../lib/components/StatCard.svelte';
   import LineChart from '../../lib/components/LineChart.svelte';
+  import BarChart from '../../lib/components/BarChart.svelte';
 
   export let annotationCoverage;
   export let sentenceValidationRate;
@@ -103,6 +104,13 @@
       title="Tren Artikel Berdasarkan Portal"
       height={320}
       labelKey="year"
+      valueKey="count"
+    />
+    <BarChart
+      data={sourceStats}
+      title="Total Artikel Berdasarkan Portal"
+      height={320}
+      labelKey="source"
       valueKey="count"
     />
   </div>
