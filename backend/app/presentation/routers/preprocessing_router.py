@@ -152,31 +152,12 @@ class JaccardDeduplicator:
         return False
 
 ECONOMY_KEYWORDS = {
-    'pertumbuhan', 'pdb', 'inflasi', 'deflasi', 'kontraksi', 'pemulihan', 'stabilisasi', 'cadangan',
-    'devisa', 'defisit', 'surplus', 'neraca', 'anggaran', 'utang', 'fiskal', 'moneter', 'ekspansi',
-    'resesi', 'stagflasi', 'stagnan', 'deregulasi', 'regulasi', 'stimulus', 'subsidi', 'pajak',
-    'tarif', 'kebijakan', 'reformasi', 'liberalisasi', 'privatisasi', 'nasionalisasi', 'intervensi',
-    'moratorium', 'amnesty', 'insentif', 'disinsentif', 'proteksi', 'restrukturisasi', 'konsolidasi',
-    'sinkronisasi', 'investasi', 'modal', 'ekspor', 'impor', 'perdagangan', 'komoditas', 'hilirisasi',
-    'diversifikasi', 'realisasi', 'devaluasi', 'revaluasi', 'transaksi', 'proteksionisme', 'embargo',
-    'dumping', 'kuota', 'bea', 'infrastruktur', 'konektivitas', 'elektrifikasi', 'irigasi', 'bendungan',
-    'jembatan', 'pelabuhan', 'bandara', 'tol', 'kereta', 'jalan', 'kawasan', 'smelter', 'kilang',
-    'jaringan', 'industri', 'manufaktur', 'produksi', 'kapasitas', 'produktivitas', 'industrialisasi',
-    'reindustrialisasi', 'modernisasi', 'otomasi', 'digitalisasi', 'transformasi', 'inovasi', 'teknologi',
-    'umkm', 'koperasi', 'wirausaha', 'mikro', 'kecil', 'menengah', 'kredit', 'pembiayaan', 'inkubasi',
-    'pemberdayaan', 'kerakyatan', 'mandiri', 'bantuan', 'digital', 'fintech', 'e-commerce', 'startup',
-    'unicorn', 'platform', 'dompet', 'neobank', 'pinjol', 'qris', 'gpn', 'marketplace', 'aplikasi',
-    'ekosistem', 'kemiskinan', 'ketimpangan', 'gini', 'kesetaraan', 'inklusi', 'distribusi',
-    'kesejahteraan', 'pengentasan', 'miskin', 'rentan', 'eksklusif', 'marjinal', 'bansos', 'santunan',
-    'perlindungan', 'pengangguran', 'upah', 'gaji', 'phk', 'vokasi', 'pelatihan', 'rekrutmen',
-    'outsourcing', 'kontrak', 'serikat', 'buruh', 'pekerja', 'informal', 'formal', 'energi', 'listrik',
-    'bbm', 'migas', 'nikel', 'batu bara', 'sawit', 'tembaga', 'emas', 'mineral', 'tambang',
-    'pertambangan', 'ebt', 'pangan', 'pertanian', 'beras', 'gabah', 'pupuk', 'sawah', 'swasembada',
-    'ketahanan', 'panen', 'agribisnis', 'hortikultura', 'ternak', 'nelayan', 'pkh', 'kis', 'kip',
-    'jkn', 'bpjs', 'blt', 'raskin', 'sembako', 'jaminan', 'sosial', 'bank', 'perbankan', 'bunga',
-    'likuiditas', 'solvabilitas', 'npl', 'ldr', 'car', 'saham', 'obligasi', 'reksa dana', 'ojk',
-    'ipm', 'literasi', 'sanitasi', 'gizi', 'stunting'
-}
+            'ekonomi', 'perekonomian', 'uang', 'rupiah', 'dolar', 'investasi', 'investor', 
+            'anggaran', 'apbn', 'pajak', 'bea', 'cukai', 'subsidi', 'bbm', 'pangan', 
+            'inflasi', 'deflasi', 'pertumbuhan', 'pdb', 'ekspor', 'impor', 'dagang', 
+            'neraca', 'surplus', 'defisit', 'saham', 'ihsg', 'bursa', 'bank', 'bunga', 
+            'kredit', 'utang', 'fiskal', 'moneter', 'pasar', 'komoditas', 'harga'
+        }
 
 INVALID_SENTENCE_PATTERNS = [
     re.compile(r'\b(ayo|mari|silakan|yuk|klik|daftar|langganan|baca|selengkapnya|scroll|lanjut|ikuti|simak|kunjungi|bagikan|share|unduh|download|ulasan|berikutnya)\b', re.IGNORECASE),
