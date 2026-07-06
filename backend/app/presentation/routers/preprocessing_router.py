@@ -611,15 +611,27 @@ async def upload_annotated_csv(
         period_lookup.setdefault(f"{src}-{article.year}-{article.month:02d}", article.id)
         prefix_lookup.setdefault(src, article.id)
 
-    await db.execute(delete(ArticleSentenceModel))
-    await db.commit()
+    # Do not delete existing sentences! Load them for matching.
+    existing_stmt = select(ArticleSentenceModel)
+    existing_result = await db.execute(existing_stmt)
+    existing_sentences = existing_result.scalars().all()
+    
+    sentence_lookup = {}
+    article_sentence_counter: dict[object, int] = {}
+    
+    for sent in existing_sentences:
+        clean_text = re.sub(r'\s+', ' ', sent.sentence_text).strip().lower()
+        sentence_lookup[(sent.article_id, clean_text)] = sent
+        curr_max = article_sentence_counter.get(sent.article_id, 0)
+        if sent.sentence_index > curr_max:
+            article_sentence_counter[sent.article_id] = sent.sentence_index
 
     inserted = 0
+    updated = 0
     skipped = 0
     not_found = 0
     remapped = 0
     validated_count = 0
-    article_sentence_counter: dict[object, int] = {}
     stats = {
         "total": len(rows_data),
         "validated": 0,
@@ -631,6 +643,9 @@ async def upload_annotated_csv(
     for row_index, row in enumerate(rows_data, start=1):
         source_id = (row.get("ID_Artikel") or "").strip().upper() or f"CSV-UNKNOWN-{row_index:06d}"
         sentence = (row.get("Kalimat_Asli") or "").strip()
+        if not sentence:
+            skipped += 1
+            continue
         initial_sentiment = (
             _normalize_sentiment_label(row.get("Sentimen_Sebelum_Validasi"))
             or _normalize_sentiment_label(row.get("Sentimen_Awal"))
@@ -680,26 +695,50 @@ async def upload_annotated_csv(
             period_key = "-".join(parts[:3]) if len(parts) >= 3 else ""
             article_id = period_lookup.get(period_key) or prefix_lookup.get(parts[0] if parts else "") or first_article_id
             remapped += 1
-
-        article_sentence_counter[article_id] = article_sentence_counter.get(article_id, 0) + 1
-        db.add(ArticleSentenceModel(
-            article_id=article_id,
-            sentence_index=article_sentence_counter[article_id],
-            sentence_text=sentence,
-            sentiment=sentiment,
-            initial_sentiment=initial_sentiment,
-            final_sentiment=final_sentiment or sentiment,
-            annotation_note=annotation_note,
-            is_manual_annotated=bool(sentiment),
-            is_validated=is_validated,
-            validation_status=validation_status,
-            dataset_version=row.get("Status_Data") or "csv-final",
-            preprocessed_content=None,
-            is_preprocessed=False,
-            preprocessed_at=None,
-            created_at=now,
-        ))
-        inserted += 1
+            
+        clean_sentence = re.sub(r'\s+', ' ', sentence).strip().lower()
+        key = (article_id, clean_sentence)
+        existing_sent = sentence_lookup.get(key)
+        
+        if existing_sent:
+            if sentiment:
+                existing_sent.sentiment = sentiment
+                existing_sent.is_manual_annotated = True
+            if initial_sentiment:
+                existing_sent.initial_sentiment = initial_sentiment
+            if final_sentiment:
+                existing_sent.final_sentiment = final_sentiment
+            if annotation_note:
+                existing_sent.annotation_note = annotation_note
+            if is_validated:
+                existing_sent.is_validated = True
+            if validation_status and validation_status != "TIDAK DIKETAHUI":
+                existing_sent.validation_status = validation_status
+            if row.get("Status_Data"):
+                existing_sent.dataset_version = row.get("Status_Data")
+            updated += 1
+        else:
+            article_sentence_counter[article_id] = article_sentence_counter.get(article_id, 0) + 1
+            new_sent = ArticleSentenceModel(
+                article_id=article_id,
+                sentence_index=article_sentence_counter[article_id],
+                sentence_text=sentence,
+                sentiment=sentiment,
+                initial_sentiment=initial_sentiment,
+                final_sentiment=final_sentiment or sentiment,
+                annotation_note=annotation_note,
+                is_manual_annotated=bool(sentiment),
+                is_validated=is_validated,
+                validation_status=validation_status,
+                dataset_version=row.get("Status_Data") or "csv-final",
+                preprocessed_content=None,
+                is_preprocessed=False,
+                preprocessed_at=None,
+                created_at=now,
+            )
+            db.add(new_sent)
+            sentence_lookup[key] = new_sent
+            inserted += 1
 
     await db.commit()
 
@@ -724,8 +763,8 @@ async def upload_annotated_csv(
     await db.commit()
 
     return AnnotatedCsvUploadResponse(
-        message=f"Berhasil! Semua {inserted} baris CSV diimpor. Artikel baru tidak dibuat. Fallback relasi: {remapped}.",
-        inserted=inserted,
+        message=f"Berhasil! {updated} baris diupdate, {inserted} baris disisipkan. Fallback relasi: {remapped}.",
+        inserted=inserted + updated,
         skipped=skipped,
         not_found=not_found,
         total_parsed=len(rows_data),
