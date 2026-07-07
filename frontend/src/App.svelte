@@ -2855,7 +2855,7 @@
         {/if}
 
         <!-- AI Assistant (Floating Chat Widget) -->
-        <Chatbot />
+        <!-- <Chatbot /> -->
       </main>
     </div>
   </div>
